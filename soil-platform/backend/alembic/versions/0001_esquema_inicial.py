@@ -27,6 +27,10 @@ def upgrade() -> None:
     user_role.create(bind, checkfirst=True)
     project_status.create(bind, checkfirst=True)
 
+    # El tipo ya fue creado explicitamente arriba: evita que create_table lo intente crear de nuevo.
+    user_role.create_type = False
+    project_status.create_type = False
+
     op.create_table(
         "tenants",
         sa.Column(
