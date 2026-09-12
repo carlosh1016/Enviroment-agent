@@ -6,12 +6,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from sqlalchemy import text
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.config import settings
+from app.database import engine
 from app.limiter import limiter
 from app.logging_config import configure_logging, get_logger
-from app.routers import auth, projects
+from app.routers import auth, conversations, documents, projects
 
 configure_logging()
 logger = get_logger(__name__)
@@ -19,8 +21,11 @@ logger = get_logger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Ciclo de vida de la aplicacion: registra el arranque y el apagado del servicio."""
+    """Ciclo de vida de la aplicacion: habilita pgvector y registra el arranque/apagado del servicio."""
     logger.info("Iniciando aplicacion")
+    if engine.dialect.name == "postgresql":
+        async with engine.begin() as conn:
+            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
     yield
     logger.info("Deteniendo aplicacion")
 
@@ -73,3 +78,5 @@ async def health_check():
 
 app.include_router(auth.router)
 app.include_router(projects.router)
+app.include_router(documents.router)
+app.include_router(conversations.router)

@@ -4,12 +4,14 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key-not-for-production-use")
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 os.environ.setdefault("ALLOWED_ORIGINS", "http://localhost:3000")
 os.environ.setdefault("COOKIE_SECURE", "False")
+os.environ.setdefault("GOOGLE_API_KEY", "test-google-api-key-not-for-production-use")
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from app import database as app_database
 from app.database import Base, get_db
 from app.limiter import limiter
 from app.main import app
@@ -31,6 +33,11 @@ async def override_get_db():
 
 
 app.dependency_overrides[get_db] = override_get_db
+
+# Codigo fuera del ciclo de requests (BackgroundTasks de ingestion_service) abre su propia sesion via
+# app_database.AsyncSessionLocal en lugar de la dependencia get_db, asi que se sustituye directamente
+# para que tambien use la base SQLite en memoria de las pruebas.
+app_database.AsyncSessionLocal = TestSessionLocal
 
 
 @pytest_asyncio.fixture(autouse=True)

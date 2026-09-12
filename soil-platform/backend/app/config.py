@@ -25,5 +25,7 @@ class Settings:
 
     RATE_LIMIT_LOGIN: str = config("RATE_LIMIT_LOGIN", default="5/minute")
 
+    GOOGLE_API_KEY: str = config("GOOGLE_API_KEY")
+
 
 settings = Settings()
