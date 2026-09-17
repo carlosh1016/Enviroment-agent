@@ -23,7 +23,7 @@ BASE_ADMIN_USER_ID = "00000000-0000-0000-0000-000000000002"
 
 
 def upgrade() -> None:
-    admin_email = os.environ.get("BASE_ADMIN_EMAIL", "admin@base.soil-platform.internal")
+    admin_email = os.environ.get("BASE_ADMIN_EMAIL", "admin@base.ecolex.internal")
     password = os.environ.get("BASE_ADMIN_PASSWORD", "changeme_en_produccion")
     hashed_password = bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=12)).decode()
 

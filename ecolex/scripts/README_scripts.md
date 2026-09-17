@@ -34,7 +34,7 @@ Por eso el orden importa:
 
 1. Edita tu `.env` (copia de `.env.example` si aun no lo tienes) y define:
    ```
-   BASE_ADMIN_EMAIL=admin@base.soil-platform.internal
+   BASE_ADMIN_EMAIL=admin@base.ecolex.internal
    BASE_ADMIN_PASSWORD=un-password-fuerte-aqui
    ```
 2. Recien despues levanta o reconstruye el stack:
@@ -56,8 +56,8 @@ ni conversaciones existentes).
 ### 3. Correr el script desde Windows
 
 ```
-cd D:\tu-repo\soil-platform
-set BASE_ADMIN_EMAIL=admin@base.soil-platform.internal
+cd D:\tu-repo\ecolex
+set BASE_ADMIN_EMAIL=admin@base.ecolex.internal
 set BASE_ADMIN_PASSWORD=tu_password
 python scripts/ingest_base_corpus.py
 ```
@@ -116,7 +116,7 @@ Con el mismo token del admin base (podes loguearte a mano si no lo guardaste):
 ```
 curl -X POST http://localhost:8000/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email":"admin@base.soil-platform.internal","password":"tu_password","tenant_slug":"_base"}'
+  -d '{"email":"admin@base.ecolex.internal","password":"tu_password","tenant_slug":"_base"}'
 ```
 
 Y despues:

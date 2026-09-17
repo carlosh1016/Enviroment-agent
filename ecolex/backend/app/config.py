@@ -8,7 +8,7 @@ class Settings:
 
     DATABASE_URL: str = config(
         "DATABASE_URL",
-        default="postgresql+asyncpg://soil_user:soil_password@postgres:5432/soil_platform",
+        default="postgresql+asyncpg://ecolex_user:ecolex_password@postgres:5432/ecolex",
     )
 
     SECRET_KEY: str = config("SECRET_KEY")

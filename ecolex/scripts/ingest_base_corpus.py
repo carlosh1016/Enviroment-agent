@@ -3,7 +3,7 @@ en el tenant compartido _base, via los endpoints HTTP de la Fase 2 (no accede a 
 directamente).
 
 Uso:
-    set BASE_ADMIN_EMAIL=admin@base.soil-platform.internal
+    set BASE_ADMIN_EMAIL=admin@base.ecolex.internal
     set BASE_ADMIN_PASSWORD=tu_password
     python scripts/ingest_base_corpus.py
 
