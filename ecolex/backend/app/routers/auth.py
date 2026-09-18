@@ -4,9 +4,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_db
-from app.deps import get_current_user
+from app.deps import get_current_tenant, get_current_user
 from app.limiter import limiter
 from app.logging_config import get_logger
+from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas import success_response
 from app.schemas.user import LoginRequest, RegisterRequest, TokenResponse, UserRead
@@ -30,7 +31,8 @@ def _set_refresh_cookie(response: Response, refresh_token: str) -> None:
 
 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
-async def register(payload: RegisterRequest, db: AsyncSession = Depends(get_db)):
+@limiter.limit("3/minute")
+async def register(request: Request, payload: RegisterRequest, db: AsyncSession = Depends(get_db)):
     """Crea un nuevo tenant y su primer usuario administrador en una unica transaccion atomica."""
     try:
         tenant, admin = await auth_service.register_tenant_with_admin(
@@ -116,9 +118,11 @@ async def logout(response: Response):
 
 
 @router.get("/me")
-async def me(current_user: User = Depends(get_current_user)):
-    """Retorna los datos del usuario autenticado actual."""
-    return success_response(
-        data=UserRead.model_validate(current_user).model_dump(mode="json"),
-        message="Usuario actual obtenido exitosamente",
-    )
+async def me(
+    current_user: User = Depends(get_current_user),
+    current_tenant: Tenant = Depends(get_current_tenant),
+):
+    """Retorna los datos del usuario autenticado actual, incluyendo el nombre de su organizacion."""
+    data = UserRead.model_validate(current_user).model_dump(mode="json")
+    data["tenant_name"] = current_tenant.name
+    return success_response(data=data, message="Usuario actual obtenido exitosamente")

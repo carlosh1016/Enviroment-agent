@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.config import settings
 from app.database import Base
-from app.models import Project, Tenant, User  # noqa: F401  aseguran el registro en Base.metadata
+from app.models import Tenant, User  # noqa: F401  aseguran el registro en Base.metadata
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)

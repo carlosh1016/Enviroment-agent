@@ -7,13 +7,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.deps import get_current_tenant, get_current_user
 from app.logging_config import get_logger
-from app.models.conversation import Conversation, Message
+from app.models.conversation import Conversation, Message, MessageRole
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas import success_response
 from app.schemas.conversation import (
     ConversationCreate,
     ConversationRead,
+    ConversationUpdate,
     MessageCreate,
     MessageRead,
     PaginatedConversations,
@@ -96,10 +97,30 @@ async def send_message(
     tenant: Tenant = Depends(get_current_tenant),
     current_user: User = Depends(get_current_user),
 ):
-    """Envia un mensaje del usuario al agente RAG y retorna la respuesta generada con sus fuentes."""
+    """Envia un mensaje del usuario al agente RAG y retorna la respuesta generada con sus fuentes.
+
+    El mensaje del usuario se guarda antes de llamar al RAG, de modo que no se pierde si este falla.
+    """
     await _get_own_conversation_or_404(db, conversation_id, tenant.id, current_user.id)
 
-    assistant_message = await rag_service.chat(db, conversation_id, payload.content, tenant.id)
+    user_message = Message(
+        tenant_id=tenant.id, conversation_id=conversation_id, role=MessageRole.USER, content=payload.content
+    )
+    db.add(user_message)
+    await db.commit()
+    await db.refresh(user_message)
+
+    try:
+        assistant_message = await rag_service.chat(
+            db, conversation_id, payload.content, tenant.id, user_message_id=user_message.id
+        )
+    except Exception as exc:
+        await db.rollback()
+        logger.error("Error generando la respuesta del agente: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="El asistente no pudo responder. Tu pregunta fue guardada, puedes intentar de nuevo.",
+        ) from exc
 
     return success_response(
         data=MessageRead.model_validate(assistant_message).model_dump(mode="json"),
@@ -125,6 +146,26 @@ async def get_messages(
     return success_response(
         data=[MessageRead.model_validate(m).model_dump(mode="json") for m in messages],
         message="Historial obtenido exitosamente",
+    )
+
+
+@router.patch("/{conversation_id}")
+async def update_conversation(
+    conversation_id: uuid.UUID,
+    payload: ConversationUpdate,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+    current_user: User = Depends(get_current_user),
+):
+    """Actualiza el titulo de una conversacion. Solo su dueno puede hacerlo."""
+    conversation = await _get_own_conversation_or_404(db, conversation_id, tenant.id, current_user.id)
+    conversation.title = payload.title
+    await db.commit()
+    await db.refresh(conversation)
+
+    return success_response(
+        data=ConversationRead.model_validate(conversation).model_dump(mode="json"),
+        message="Conversacion actualizada exitosamente",
     )
 
 

@@ -34,20 +34,20 @@ BASE_ADMIN_EMAIL = os.environ.get("BASE_ADMIN_EMAIL")
 BASE_ADMIN_PASSWORD = os.environ.get("BASE_ADMIN_PASSWORD")
 BASE_TENANT_SLUG = "_base"
 
-REQUEST_TIMEOUT_SECONDS = 30
+REQUEST_TIMEOUT_SECONDS = 120
 POLL_INTERVAL_SECONDS = 3
-POLL_MAX_SECONDS = 120
+POLL_MAX_SECONDS = 300
 
 # Rutas en Windows, donde corre este script.
 DOCUMENTS = [
-    r"D:\Descargas\Decreto_1076_de_2015_Sector_Ambiente_y_Desarrollo_Sostenible.pdf",
-    r"D:\Descargas\Guía_Informativa__Estructura_y_Regulación_del_Sector_Ambiente_y_Desarrollo_Sostenible_Decreto_1076_de_2015.pdf",
-    r"D:\Descargas\Resolucion-0627-de-2006.pdf",
-    r"D:\Descargas\resolucion-1541-de-2013.pdf",
-    r"D:\Descargas\resolucion-909-de-2008.pdf",
-    r"D:\Descargas\Resolucion-2254-de-2017.pdf",
-    r"D:\Descargas\resolucion-0316-de-2018.pdf",
-    r"D:\Descargas\resolucion-631-de-2015.pdf",
+    r"/mnt/c/Users/carlos.hernandezc/Downloads/Decreto_1076_de_2015_Sector_Ambiente_y_Desarrollo_Sostenible.pdf",
+    r"/mnt/c/Users/carlos.hernandezc/Downloads/Guía_Informativa__Estructura_y_Regulación_del_Sector_Ambiente_y_Desarrollo_Sostenible_Decreto_1076_de_2015.pdf",
+    r"/mnt/c/Users/carlos.hernandezc/Downloads/Resolucion-0627-de-2006.pdf",
+    r"/mnt/c/Users/carlos.hernandezc/Downloads/resolucion-1541-de-2013.pdf",
+    r"/mnt/c/Users/carlos.hernandezc/Downloads/resolucion-909-de-2008.pdf",
+    r"/mnt/c/Users/carlos.hernandezc/Downloads/Resolucion-2254-de-2017.pdf",
+    r"/mnt/c/Users/carlos.hernandezc/Downloads/resolucion-0316-de-2018.pdf",
+    r"/mnt/c/Users/carlos.hernandezc/Downloads/resolucion-631-de-2015.pdf",
 ]
 
 

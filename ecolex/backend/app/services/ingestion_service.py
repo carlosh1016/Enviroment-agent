@@ -1,3 +1,4 @@
+import asyncio
 import io
 import uuid
 
@@ -16,6 +17,7 @@ logger = get_logger(__name__)
 
 EMBEDDING_MODEL = "models/text-embedding-004"
 EMBEDDING_BATCH_SIZE = 20
+EMBEDDING_BATCH_TIMEOUT_SECONDS = 60
 
 
 def parse_document(file_bytes: bytes, file_type: str) -> str:
@@ -69,12 +71,22 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> list[st
 
 async def embed_chunks(chunks: list[str]) -> list[list[float]]:
     """Genera embeddings de dimension 768 para una lista de chunks, en batches de 20 para no exceder rate limits."""
-    embedder = GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL, google_api_key=settings.GOOGLE_API_KEY)
+    embedder = GoogleGenerativeAIEmbeddings(
+        model=EMBEDDING_MODEL, google_api_key=settings.GOOGLE_API_KEY, transport="rest"
+    )
 
     vectors: list[list[float]] = []
     for i in range(0, len(chunks), EMBEDDING_BATCH_SIZE):
         batch = chunks[i : i + EMBEDDING_BATCH_SIZE]
-        batch_vectors = await embedder.aembed_documents(batch)
+        try:
+            batch_vectors = await asyncio.wait_for(
+                embedder.aembed_documents(batch), timeout=EMBEDDING_BATCH_TIMEOUT_SECONDS
+            )
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(
+                f"Timeout generando embeddings: el batch {i // EMBEDDING_BATCH_SIZE} "
+                f"no respondio en {EMBEDDING_BATCH_TIMEOUT_SECONDS}s"
+            ) from exc
         vectors.extend(batch_vectors)
 
     return vectors

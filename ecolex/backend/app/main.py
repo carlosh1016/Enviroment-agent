@@ -4,7 +4,6 @@ from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy import text
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -13,7 +12,7 @@ from app.config import settings
 from app.database import engine
 from app.limiter import limiter
 from app.logging_config import configure_logging, get_logger
-from app.routers import auth, conversations, documents, projects
+from app.routers import auth, conversations, documents, users
 
 configure_logging()
 logger = get_logger(__name__)
@@ -31,17 +30,26 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Plataforma de Analisis de Contaminacion de Suelos",
+    title="Ecolex API",
     description=(
-        "API SaaS multi-tenant para estudios de contaminacion de suelos "
-        "orientada al sector inmobiliario y de construccion en Colombia"
+        "API SaaS multi-tenant con agente conversacional RAG para consulta de "
+        "normativa ambiental colombiana"
     ),
     version="1.0.0",
     lifespan=lifespan,
 )
 
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_exception_handler(request: Request, exc: RateLimitExceeded):
+    """Devuelve el 429 de slowapi con el envoltorio de respuesta estandar."""
+    return JSONResponse(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        content={"success": False, "message": "Demasiados intentos. Espera 1 minuto e intenta de nuevo.", "data": None},
+    )
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -70,6 +78,16 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     )
 
 
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Ultima red de seguridad: cualquier excepcion no controlada responde con el envoltorio estandar."""
+    logger.error("Excepcion no controlada: %s", type(exc).__name__)
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"success": False, "message": "Error interno del servidor", "data": None},
+    )
+
+
 @app.get("/health")
 async def health_check():
     """Endpoint de verificacion de salud del servicio, usado por orquestadores y balanceadores."""
@@ -77,6 +95,6 @@ async def health_check():
 
 
 app.include_router(auth.router)
-app.include_router(projects.router)
 app.include_router(documents.router)
 app.include_router(conversations.router)
+app.include_router(users.router)

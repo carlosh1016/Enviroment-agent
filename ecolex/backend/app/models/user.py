@@ -47,6 +47,3 @@ class User(Base):
     )
 
     tenant = relationship("Tenant", back_populates="users")
-    projects_created = relationship(
-        "Project", back_populates="creator", foreign_keys="Project.created_by"
-    )

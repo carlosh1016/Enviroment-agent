@@ -24,4 +24,3 @@ class Tenant(Base):
     )
 
     users = relationship("User", back_populates="tenant", cascade="all, delete-orphan")
-    projects = relationship("Project", back_populates="tenant", cascade="all, delete-orphan")

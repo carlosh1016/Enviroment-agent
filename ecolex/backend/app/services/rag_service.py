@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -17,6 +18,7 @@ CHAT_MODEL = "gemini-2.0-flash"
 EMBEDDING_MODEL = "models/text-embedding-004"
 BASE_TENANT_SLUG = "_base"
 HISTORY_MESSAGE_LIMIT = 6
+RAG_TIMEOUT_SECONDS = 30
 
 SYSTEM_PROMPT = (
     "Eres un asistente legal ambiental especializado en normativa colombiana. "
@@ -46,8 +48,15 @@ async def retrieve_context(db: AsyncSession, query: str, tenant_id: uuid.UUID, k
     El filtro por tenant_id garantiza que nunca se cruzan datos entre tenants distintos: solo se
     incluyen chunks del tenant que consulta y los del tenant del sistema (slug='_base').
     """
-    embedder = GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL, google_api_key=settings.GOOGLE_API_KEY)
-    query_vector = await embedder.aembed_query(query)
+    embedder = GoogleGenerativeAIEmbeddings(
+        model=EMBEDDING_MODEL, google_api_key=settings.GOOGLE_API_KEY, transport="rest"
+    )
+    try:
+        query_vector = await asyncio.wait_for(embedder.aembed_query(query), timeout=RAG_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError as exc:
+        raise TimeoutError(
+            f"Timeout generando el embedding de la consulta: no respondio en {RAG_TIMEOUT_SECONDS}s"
+        ) from exc
 
     base_tenant_id = await _get_base_tenant_id(db)
     dialect_name = db.bind.dialect.name if db.bind is not None else "postgresql"
@@ -110,19 +119,32 @@ async def generate_response(
         HumanMessage(content=query),
     ]
 
-    llm = ChatGoogleGenerativeAI(model=CHAT_MODEL, google_api_key=settings.GOOGLE_API_KEY)
-    response = await llm.ainvoke(messages)
+    llm = ChatGoogleGenerativeAI(model=CHAT_MODEL, google_api_key=settings.GOOGLE_API_KEY, transport="rest")
+    try:
+        response = await asyncio.wait_for(llm.ainvoke(messages), timeout=RAG_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError as exc:
+        raise TimeoutError(
+            f"Timeout generando la respuesta del agente: no respondio en {RAG_TIMEOUT_SECONDS}s"
+        ) from exc
     return response.content
 
 
-async def chat(db: AsyncSession, conversation_id: uuid.UUID, user_message: str, tenant_id: uuid.UUID) -> Message:
-    """Orquesta el flujo del agente: recupera contexto, genera respuesta y persiste ambos mensajes.
+async def chat(
+    db: AsyncSession,
+    conversation_id: uuid.UUID,
+    user_message: str,
+    tenant_id: uuid.UUID,
+    user_message_id: uuid.UUID,
+) -> Message:
+    """Orquesta el flujo del agente: recupera contexto, genera respuesta y persiste el mensaje del assistant.
 
+    El mensaje del usuario (user_message_id) ya fue guardado por el router antes de llamar aqui, para que
+    no se pierda si el RAG falla; se excluye del historial porque se envia aparte como la pregunta actual.
     Guarda en el Message del assistant los source_chunks (documento y chunk_index) usados como contexto.
     """
     history_result = await db.execute(
         select(Message)
-        .where(Message.conversation_id == conversation_id)
+        .where(Message.conversation_id == conversation_id, Message.id != user_message_id)
         .order_by(Message.created_at.desc())
         .limit(HISTORY_MESSAGE_LIMIT)
     )
@@ -136,11 +158,6 @@ async def chat(db: AsyncSession, conversation_id: uuid.UUID, user_message: str, 
         chunk._document_filename = filenames.get(chunk.document_id, "desconocido")
 
     response_text = await generate_response(user_message, context_chunks, history)
-
-    user_msg = Message(
-        tenant_id=tenant_id, conversation_id=conversation_id, role=MessageRole.USER, content=user_message
-    )
-    db.add(user_msg)
 
     source_chunks = [
         {
