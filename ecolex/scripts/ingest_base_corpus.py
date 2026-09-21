@@ -34,20 +34,20 @@ BASE_ADMIN_EMAIL = os.environ.get("BASE_ADMIN_EMAIL")
 BASE_ADMIN_PASSWORD = os.environ.get("BASE_ADMIN_PASSWORD")
 BASE_TENANT_SLUG = "_base"
 
-REQUEST_TIMEOUT_SECONDS = 120
-POLL_INTERVAL_SECONDS = 3
-POLL_MAX_SECONDS = 300
+REQUEST_TIMEOUT_SECONDS = 300
+POLL_INTERVAL_SECONDS = 10
+POLL_MAX_SECONDS = 1800
 
-# Rutas en Windows, donde corre este script.
+# Rutas en la unidad D: (Descargas), donde corre este script.
 DOCUMENTS = [
-    r"/mnt/c/Users/carlos.hernandezc/Downloads/Decreto_1076_de_2015_Sector_Ambiente_y_Desarrollo_Sostenible.pdf",
-    r"/mnt/c/Users/carlos.hernandezc/Downloads/Guía_Informativa__Estructura_y_Regulación_del_Sector_Ambiente_y_Desarrollo_Sostenible_Decreto_1076_de_2015.pdf",
-    r"/mnt/c/Users/carlos.hernandezc/Downloads/Resolucion-0627-de-2006.pdf",
-    r"/mnt/c/Users/carlos.hernandezc/Downloads/resolucion-1541-de-2013.pdf",
-    r"/mnt/c/Users/carlos.hernandezc/Downloads/resolucion-909-de-2008.pdf",
-    r"/mnt/c/Users/carlos.hernandezc/Downloads/Resolucion-2254-de-2017.pdf",
-    r"/mnt/c/Users/carlos.hernandezc/Downloads/resolucion-0316-de-2018.pdf",
-    r"/mnt/c/Users/carlos.hernandezc/Downloads/resolucion-631-de-2015.pdf",
+    r"/mnt/d/Descargas/Decreto_1076_de_2015_Sector_Ambiente_y_Desarrollo_Sostenible.pdf",
+    r"/mnt/d/Descargas/Guía Informativa_ Estructura y Regulación del Sector Ambiente y Desarrollo Sostenible (Decreto 1076 de 2015).pdf",
+    r"/mnt/d/Descargas/Resolucion-0627-de-2006.pdf",
+    r"/mnt/d/Descargas/resolucion-1541-de-2013.pdf",
+    r"/mnt/d/Descargas/resolucion-909-de-2008.pdf",
+    r"/mnt/d/Descargas/Resolucion-2254-de-2017.pdf",
+    r"/mnt/d/Descargas/resolucion-0316-de-2018.pdf",
+    r"/mnt/d/Descargas/resolucion-631-de-2015.pdf",
 ]
 
 
@@ -100,70 +100,17 @@ def upload_document(token: str, file_path: Path) -> str:
     return document["id"]
 
 
-def poll_document_status(token: str, document_id: str, filename: str) -> dict:
-    """Hace polling a GET /documents/{id} cada POLL_INTERVAL_SECONDS hasta que status != 'processing'."""
-    deadline = time.monotonic() + POLL_MAX_SECONDS
+def upload_all(token_holder: dict, raw_paths: list[str]) -> tuple[list[dict], list[tuple[str, str]]]:
+    """Fase 1: sube todos los documentos sin esperar a que terminen de procesarse.
 
-    while True:
-        response = requests.get(
-            DOCUMENT_URL_TEMPLATE.format(document_id=document_id),
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=REQUEST_TIMEOUT_SECONDS,
-        )
-        if response.status_code == 401:
-            raise _Unauthorized()
-        if response.status_code != 200:
-            raise IngestionError(f"No se pudo consultar el documento {document_id}: {response.text}")
-
-        document = response.json()["data"]
-        if document["status"] != "processing":
-            return document
-
-        if time.monotonic() >= deadline:
-            raise IngestionError(
-                f"'{filename}' sigue en 'processing' tras {POLL_MAX_SECONDS}s, se abandona el polling"
-            )
-
-        time.sleep(POLL_INTERVAL_SECONDS)
-
-
-def ingest_one(token_holder: dict, file_path: Path) -> tuple[dict | None, str | None]:
-    """Sube y espera un documento. Retorna (documento_final_o_None, mensaje_de_error_o_None).
-
-    Si el token expira (401) en cualquier paso, hace un re-login automatico y reintenta una vez.
+    Retorna (pendientes, errores). pendientes es una lista de {"document_id", "filename"}
+    para cada upload exitoso. Si el token expira (401), hace un re-login automatico y
+    reintenta una vez esa misma subida.
     """
-    filename = file_path.name
-
-    for attempt in range(2):
-        try:
-            document_id = upload_document(token_holder["token"], file_path)
-            document = poll_document_status(token_holder["token"], document_id, filename)
-
-            if document["status"] == "error":
-                return None, document.get("error_message") or "Error desconocido durante el procesamiento"
-
-            return document, None
-
-        except _Unauthorized:
-            if attempt == 0:
-                logger.warning("Token expirado o invalido, reintentando login...")
-                token_holder["token"] = login()
-                continue
-            return None, "Token expirado y el re-login tambien fallo"
-
-    return None, "No se pudo procesar tras reintentar"
-
-
-def main() -> int:
-    logger.info("Iniciando ingesta del corpus base ambiental (%d documentos)", len(DOCUMENTS))
-
-    token_holder = {"token": login()}
-
-    processed = 0
-    total_chunks = 0
+    pending: list[dict] = []
     errors: list[tuple[str, str]] = []
 
-    for raw_path in DOCUMENTS:
+    for raw_path in raw_paths:
         file_path = Path(raw_path)
 
         if not file_path.is_file():
@@ -171,21 +118,107 @@ def main() -> int:
             errors.append((file_path.name, "Archivo no encontrado en disco"))
             continue
 
-        logger.info("Procesando: %s", file_path.name)
-        document, error_message = ingest_one(token_holder, file_path)
-        processed += 1
+        for attempt in range(2):
+            try:
+                document_id = upload_document(token_holder["token"], file_path)
+                logger.info("Subido: %s (id=%s)", file_path.name, document_id)
+                pending.append({"document_id": document_id, "filename": file_path.name})
+                break
+            except _Unauthorized:
+                if attempt == 0:
+                    logger.warning("Token expirado o invalido, reintentando login...")
+                    token_holder["token"] = login()
+                    continue
+                errors.append((file_path.name, "Token expirado y el re-login tambien fallo"))
+            except IngestionError as exc:
+                errors.append((file_path.name, str(exc)))
+                break
 
-        if error_message:
-            logger.error("Error procesando '%s': %s", file_path.name, error_message)
-            errors.append((file_path.name, error_message))
-        else:
-            chunk_count = document["chunk_count"]
-            total_chunks += chunk_count
-            logger.info("'%s' listo: %d chunks generados", file_path.name, chunk_count)
+    return pending, errors
+
+
+def poll_all(token_holder: dict, pending: list[dict]) -> tuple[list[dict], list[tuple[str, str]]]:
+    """Fase 2: hace polling cada POLL_INTERVAL_SECONDS sobre todos los documentos pendientes,
+    hasta que cada uno termine (ready o error) o se agote POLL_MAX_SECONDS en total.
+
+    Retorna (documentos_listos, errores).
+    """
+    ready: list[dict] = []
+    errors: list[tuple[str, str]] = []
+    remaining = list(pending)
+    deadline = time.monotonic() + POLL_MAX_SECONDS
+
+    while remaining:
+        if time.monotonic() >= deadline:
+            for item in remaining:
+                errors.append(
+                    (item["filename"], f"Sigue en 'processing' tras {POLL_MAX_SECONDS}s, se abandona el polling")
+                )
+            remaining = []
+            break
+
+        still_pending: list[dict] = []
+        for item in remaining:
+            document_id = item["document_id"]
+            filename = item["filename"]
+
+            try:
+                response = requests.get(
+                    DOCUMENT_URL_TEMPLATE.format(document_id=document_id),
+                    headers={"Authorization": f"Bearer {token_holder['token']}"},
+                    timeout=REQUEST_TIMEOUT_SECONDS,
+                )
+            except requests.exceptions.RequestException as exc:
+                logger.warning("No se pudo consultar '%s' (%s), se reintenta en el siguiente ciclo", filename, exc)
+                still_pending.append(item)
+                continue
+
+            if response.status_code == 401:
+                logger.warning("Token expirado o invalido, reintentando login...")
+                token_holder["token"] = login()
+                still_pending.append(item)
+                continue
+            if response.status_code != 200:
+                errors.append((filename, f"No se pudo consultar el documento {document_id}: {response.text}"))
+                continue
+
+            document = response.json()["data"]
+            status = document["status"]
+
+            if status == "ready":
+                logger.info("Listo: %s (chunks=%d)", filename, document["chunk_count"])
+                ready.append(document)
+            elif status == "error":
+                message = document.get("error_message") or "Error desconocido durante el procesamiento"
+                logger.error("Error: %s — %s", filename, message)
+                errors.append((filename, message))
+            else:
+                still_pending.append(item)
+
+        remaining = still_pending
+        if remaining:
+            time.sleep(POLL_INTERVAL_SECONDS)
+
+    return ready, errors
+
+
+def main() -> int:
+    logger.info("Iniciando ingesta del corpus base ambiental (%d documentos)", len(DOCUMENTS))
+
+    token_holder = {"token": login()}
+
+    logger.info("Fase 1: subiendo %d documentos", len(DOCUMENTS))
+    pending, upload_errors = upload_all(token_holder, DOCUMENTS)
+
+    logger.info("Fase 2: esperando a que %d documentos terminen de procesarse", len(pending))
+    ready, poll_errors = poll_all(token_holder, pending)
+
+    errors = upload_errors + poll_errors
+    total_chunks = sum(document["chunk_count"] for document in ready)
 
     logger.info("=" * 60)
     logger.info("RESUMEN DE INGESTA")
-    logger.info("Documentos procesados: %d/%d", processed, len(DOCUMENTS))
+    logger.info("Documentos procesados: %d/%d", len(ready) + len(errors), len(DOCUMENTS))
     logger.info("Total de chunks generados: %d", total_chunks)
     if errors:
         logger.info("Documentos con error (%d):", len(errors))

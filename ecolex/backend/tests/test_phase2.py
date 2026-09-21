@@ -132,6 +132,7 @@ def _mock_chat_instance(response_text: str = "Respuesta simulada del asistente."
     instance = MagicMock()
     mock_response = MagicMock()
     mock_response.content = response_text
+    mock_response.text = response_text
     instance.ainvoke = AsyncMock(return_value=mock_response)
     return instance
 

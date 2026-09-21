@@ -3,7 +3,7 @@ import io
 import uuid
 
 from docx import Document as DocxDocument
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from pypdf import PdfReader
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,7 +15,8 @@ from app.models.document import Document, DocumentChunk, DocumentStatus
 
 logger = get_logger(__name__)
 
-EMBEDDING_MODEL = "models/text-embedding-004"
+EMBEDDING_MODEL = "models/gemini-embedding-001"
+EMBEDDING_DIMENSIONS = 768
 EMBEDDING_BATCH_SIZE = 20
 EMBEDDING_BATCH_TIMEOUT_SECONDS = 60
 
@@ -72,7 +73,9 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> list[st
 async def embed_chunks(chunks: list[str]) -> list[list[float]]:
     """Genera embeddings de dimension 768 para una lista de chunks, en batches de 20 para no exceder rate limits."""
     embedder = GoogleGenerativeAIEmbeddings(
-        model=EMBEDDING_MODEL, google_api_key=settings.GOOGLE_API_KEY, transport="rest"
+        model=EMBEDDING_MODEL,
+        google_api_key=settings.GOOGLE_API_KEY,
+        output_dimensionality=EMBEDDING_DIMENSIONS,
     )
 
     vectors: list[list[float]] = []
@@ -88,6 +91,7 @@ async def embed_chunks(chunks: list[str]) -> list[list[float]]:
                 f"no respondio en {EMBEDDING_BATCH_TIMEOUT_SECONDS}s"
             ) from exc
         vectors.extend(batch_vectors)
+        await asyncio.sleep(2)
 
     return vectors
 
@@ -112,8 +116,8 @@ async def process_document(
     await db.commit()
 
     try:
-        text = parse_document(file_bytes, file_type)
-        chunks = chunk_text(text)
+        text = await asyncio.to_thread(parse_document, file_bytes, file_type)
+        chunks = await asyncio.to_thread(chunk_text, text)
         if not chunks:
             raise ValueError("No se pudieron generar fragmentos del documento")
 

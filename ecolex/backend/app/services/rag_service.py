@@ -14,8 +14,9 @@ from app.models.tenant import Tenant
 
 logger = get_logger(__name__)
 
-CHAT_MODEL = "gemini-2.0-flash"
-EMBEDDING_MODEL = "models/text-embedding-004"
+CHAT_MODEL = "gemini-3.8-flash"
+EMBEDDING_MODEL = "models/gemini-embedding-001"
+EMBEDDING_DIMENSIONS = 768
 BASE_TENANT_SLUG = "_base"
 HISTORY_MESSAGE_LIMIT = 6
 RAG_TIMEOUT_SECONDS = 30
@@ -49,7 +50,9 @@ async def retrieve_context(db: AsyncSession, query: str, tenant_id: uuid.UUID, k
     incluyen chunks del tenant que consulta y los del tenant del sistema (slug='_base').
     """
     embedder = GoogleGenerativeAIEmbeddings(
-        model=EMBEDDING_MODEL, google_api_key=settings.GOOGLE_API_KEY, transport="rest"
+        model=EMBEDDING_MODEL,
+        google_api_key=settings.GOOGLE_API_KEY,
+        output_dimensionality=EMBEDDING_DIMENSIONS,
     )
     try:
         query_vector = await asyncio.wait_for(embedder.aembed_query(query), timeout=RAG_TIMEOUT_SECONDS)
@@ -119,14 +122,16 @@ async def generate_response(
         HumanMessage(content=query),
     ]
 
-    llm = ChatGoogleGenerativeAI(model=CHAT_MODEL, google_api_key=settings.GOOGLE_API_KEY, transport="rest")
+    llm = ChatGoogleGenerativeAI(model=CHAT_MODEL, google_api_key=settings.GOOGLE_API_KEY)
     try:
         response = await asyncio.wait_for(llm.ainvoke(messages), timeout=RAG_TIMEOUT_SECONDS)
     except asyncio.TimeoutError as exc:
         raise TimeoutError(
             f"Timeout generando la respuesta del agente: no respondio en {RAG_TIMEOUT_SECONDS}s"
         ) from exc
-    return response.content
+    # langchain-core 1.x puede devolver el contenido como lista de bloques (texto + firma de
+    # thinking) en vez de str plano; .text concatena solo los bloques de tipo texto.
+    return str(response.text)
 
 
 async def chat(
