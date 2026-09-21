@@ -13,15 +13,17 @@ email-validator==2.2.0
 python-multipart==0.0.12
 
 # Fase 2: pipeline de ingesta de documentos y agente RAG
-langchain==1.4.2
-langchain-text-splitters
+langchain-core
 langchain-google-genai==4.4.0
 google-genai==2.24.0
 pgvector==0.2.5
-pypdf==5.1.0
 python-docx==1.1.2
 
-# Dependencias de pruebas
+# Pipeline de ingesta de PDFs (clasificador + extraccion/transcripcion via OpenRouter)
+pdfplumber==0.11.4
+pdf2image==1.17.0
+
+# httpx: usado por app/services/openrouter_client.py (produccion) y por el TestClient de pytest
 pytest==8.3.3
 pytest-asyncio==0.24.0
 httpx==0.28.1

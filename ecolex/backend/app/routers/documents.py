@@ -17,7 +17,7 @@ from app.services import ingestion_service
 router = APIRouter(prefix="/api/v1/documents", tags=["documents"])
 logger = get_logger(__name__)
 
-MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
+MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024
 ALLOWED_EXTENSIONS = {".pdf": DocumentFileType.PDF, ".docx": DocumentFileType.DOCX, ".txt": DocumentFileType.TXT}
 
 
