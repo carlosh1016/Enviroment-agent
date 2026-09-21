@@ -47,10 +47,17 @@ class MessageCreate(BaseModel):
 
 
 class SourceChunkRead(BaseModel):
-    """Referencia a un chunk fuente usado para generar una respuesta del asistente."""
+    """Referencia a un chunk fuente usado para generar una respuesta del asistente.
 
-    document_name: str
+    Guarda solo la referencia (documento, chunk, score, ubicacion normativa), nunca el texto
+    completo del chunk.
+    """
+
+    document_id: uuid.UUID
     chunk_index: int
+    score: float
+    numero_articulo: str | None = None
+    pagina_origen: int | None = None
 
 
 class MessageRead(BaseModel):

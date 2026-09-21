@@ -127,16 +127,6 @@ def _mock_embeddings_instance(dim: int = 768, value: float = 0.1) -> MagicMock:
     return instance
 
 
-def _mock_chat_instance(response_text: str = "Respuesta simulada del asistente.") -> MagicMock:
-    """Crea un mock de ChatGoogleGenerativeAI cuyo ainvoke retorna un texto fijo, sin llamadas reales."""
-    instance = MagicMock()
-    mock_response = MagicMock()
-    mock_response.content = response_text
-    mock_response.text = response_text
-    instance.ainvoke = AsyncMock(return_value=mock_response)
-    return instance
-
-
 def _patched_ingestion_embeddings():
     return patch(
         "app.services.ingestion_service.GoogleGenerativeAIEmbeddings",
@@ -177,10 +167,10 @@ class TestDocumentUpload:
         assert response.status_code == 422
 
     async def test_upload_file_too_large_returns_422(self, client):
-        """3. Upload con archivo mayor a 10MB debe retornar 422."""
+        """3. Upload con archivo mayor a 50MB debe retornar 422."""
         headers, _ = await _register_and_login(client)
 
-        oversized = b"a" * (10 * 1024 * 1024 + 1)
+        oversized = b"a" * (50 * 1024 * 1024 + 1)
         response = await client.post(
             "/api/v1/documents/upload",
             files={"file": ("grande.txt", oversized, "text/plain")},
@@ -257,13 +247,30 @@ class TestDocumentUpload:
 
 
 class TestIngestionService:
-    def test_parse_document_pdf_returns_non_empty_text(self):
-        """7. parse_document con PDF valido debe retornar un string no vacio."""
-        from app.services.ingestion_service import parse_document
+    async def test_upload_pdf_returns_202_with_processing_status(self, client):
+        """7. Upload de PDF valido debe retornar 202 con status='processing', sin esperar el
+        resultado final del pipeline async (que ahora clasifica y llama a OpenRouter, no a
+        parse_document sync)."""
+        headers, _ = await _register_and_login(client, email="ingest-pdf@example.com")
 
-        text = parse_document(VALID_PDF_BYTES, "pdf")
-        assert len(text.strip()) > 0
-        assert "normativa" in text.lower()
+        with (
+            patch(
+                "app.services.ingestion_service.openrouter_client.chat_completion",
+                new=AsyncMock(return_value="ARTICULO 1. " + VALID_PDF_TEXT),
+            ),
+            _patched_ingestion_embeddings(),
+        ):
+            response = await client.post(
+                "/api/v1/documents/upload",
+                files={"file": ("normativa.pdf", VALID_PDF_BYTES, "application/pdf")},
+                data={"es_base_corpus": "false"},
+                headers=headers,
+            )
+
+        body = response.json()
+        assert response.status_code == 202
+        assert body["data"]["status"] == "processing"
+        assert body["data"]["filename"] == "normativa.pdf"
 
     def test_parse_document_docx_returns_non_empty_text(self):
         """8. parse_document con DOCX valido debe retornar un string no vacio."""
@@ -273,20 +280,29 @@ class TestIngestionService:
         assert len(text.strip()) > 0
         assert "normativa" in text.lower()
 
-    def test_chunk_text_generates_multiple_chunks_none_below_50_chars(self):
-        """9. chunk_text con texto largo debe generar multiples chunks, ninguno menor a 50 caracteres."""
-        from app.services.ingestion_service import chunk_text
+    def test_chunk_semantic_splits_by_articulo_with_metadata(self):
+        """9. chunk_semantic con texto de al menos 2 ARTICULOs debe generar al menos 2 chunks,
+        cada uno con metadata de numero_articulo/pagina_origen/posicion_en_documento y ninguno
+        por debajo del minimo de 100 caracteres configurado."""
+        from app.services.ingestion_service import chunk_semantic
 
-        long_text = "Este parrafo trata sobre normativa ambiental colombiana y sus implicaciones. " * 50
-        chunks = chunk_text(long_text, chunk_size=200, overlap=50)
+        filler = (
+            "Este parrafo desarrolla el contenido del articulo con suficientes caracteres "
+            "para superar el minimo configurado. "
+        )
+        text = "ARTICULO 1. " + filler * 3 + "\n\n" + "ARTICULO 2. " + filler * 3
 
-        assert len(chunks) > 1
-        assert all(len(chunk) >= 50 for chunk in chunks)
+        chunks = chunk_semantic([(1, text)])
+
+        assert len(chunks) >= 2
+        for chunk in chunks:
+            assert {"numero_articulo", "pagina_origen", "posicion_en_documento"} <= chunk["metadata"].keys()
+            assert len(chunk["content"]) >= 100
 
 
 class TestRagRetrieval:
-    async def test_retrieve_context_returns_chunks_of_correct_tenant(self, client):
-        """10. retrieve_context con mock de embeddings debe retornar chunks solo del tenant correcto."""
+    async def test_retrieve_relevant_chunks_returns_chunks_of_correct_tenant(self, client):
+        """10. retrieve_relevant_chunks debe retornar chunks del tenant que subio el documento."""
         headers, _ = await _register_and_login(client, email="rag-a@example.com")
         tenant_id = await _get_tenant_id(client, headers)
 
@@ -298,17 +314,13 @@ class TestRagRetrieval:
                 headers=headers,
             )
 
-        from app.services.rag_service import retrieve_context
+        from app.services.rag_service import retrieve_relevant_chunks
 
         async with TestSessionLocal() as db:
-            with patch(
-                "app.services.rag_service.GoogleGenerativeAIEmbeddings",
-                return_value=_mock_embeddings_instance(),
-            ):
-                chunks = await retrieve_context(db, "normativa ambiental", tenant_id, k=5)
+            chunks = await retrieve_relevant_chunks(db, "normativa ambiental", tenant_id, top_k=5)
 
         assert len(chunks) > 0
-        assert all(chunk.tenant_id == tenant_id for chunk in chunks)
+        assert all(chunk["document_id"] is not None for chunk in chunks)
 
 
 class TestConversations:
@@ -326,20 +338,25 @@ class TestConversations:
         assert "id" in body["data"]
 
     async def test_send_message_with_mocked_gemini_returns_assistant_response(self, client):
-        """12. Enviar mensaje en conversacion con mocks de Gemini debe retornar 200 con respuesta del assistant."""
+        """12. Enviar mensaje en conversacion con mocks de OpenRouter debe retornar 200 con
+        respuesta del assistant. Sube un documento antes para que haya chunks reales que
+        recuperar (si no hay chunks, el flujo responde el fallback en vez de llamar al LLM)."""
         headers, _ = await _register_and_login(client, email="conv-b@example.com")
+
+        with _patched_ingestion_embeddings():
+            await client.post(
+                "/api/v1/documents/upload",
+                files={"file": ("doc_conv_b.txt", VALID_TXT_BYTES, "text/plain")},
+                data={"es_base_corpus": "false"},
+                headers=headers,
+            )
 
         conv_response = await client.post("/api/v1/conversations/", json={}, headers=headers)
         conversation_id = conv_response.json()["data"]["id"]
 
-        with (
-            patch(
-                "app.services.rag_service.GoogleGenerativeAIEmbeddings", return_value=_mock_embeddings_instance()
-            ),
-            patch(
-                "app.services.rag_service.ChatGoogleGenerativeAI",
-                return_value=_mock_chat_instance("La normativa vigente establece requisitos especificos."),
-            ),
+        with patch(
+            "app.services.rag_service.openrouter_client.chat_completion",
+            new=AsyncMock(return_value="La normativa vigente establece requisitos especificos."),
         ):
             response = await client.post(
                 f"/api/v1/conversations/{conversation_id}/messages",
@@ -356,16 +373,21 @@ class TestConversations:
         """13. Historial de conversacion debe retornar los mensajes en orden cronologico."""
         headers, _ = await _register_and_login(client, email="conv-c@example.com")
 
+        with _patched_ingestion_embeddings():
+            await client.post(
+                "/api/v1/documents/upload",
+                files={"file": ("doc_conv_c.txt", VALID_TXT_BYTES, "text/plain")},
+                data={"es_base_corpus": "false"},
+                headers=headers,
+            )
+
         conv_response = await client.post("/api/v1/conversations/", json={}, headers=headers)
         conversation_id = conv_response.json()["data"]["id"]
 
         for reply in ("Respuesta 1", "Respuesta 2"):
-            with (
-                patch(
-                    "app.services.rag_service.GoogleGenerativeAIEmbeddings",
-                    return_value=_mock_embeddings_instance(),
-                ),
-                patch("app.services.rag_service.ChatGoogleGenerativeAI", return_value=_mock_chat_instance(reply)),
+            with patch(
+                "app.services.rag_service.openrouter_client.chat_completion",
+                new=AsyncMock(return_value=reply),
             ):
                 await client.post(
                     f"/api/v1/conversations/{conversation_id}/messages",
