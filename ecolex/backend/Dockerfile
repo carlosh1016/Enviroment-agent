@@ -6,7 +6,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gcc libpq-dev poppler-utils \
+    && apt-get install -y --no-install-recommends \
+        gcc libpq-dev poppler-utils \
+        libpango-1.0-0 libpangoft2-1.0-0 libpangocairo-1.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
