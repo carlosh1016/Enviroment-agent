@@ -4,7 +4,6 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key-not-for-production-use")
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 os.environ.setdefault("ALLOWED_ORIGINS", "http://localhost:3000")
 os.environ.setdefault("COOKIE_SECURE", "False")
-os.environ.setdefault("GOOGLE_API_KEY", "test-google-api-key-not-for-production-use")
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient

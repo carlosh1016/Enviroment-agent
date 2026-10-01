@@ -1,6 +1,6 @@
 import io
 import uuid
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 from conftest import TestSessionLocal
 from docx import Document as DocxDocument
@@ -112,25 +112,14 @@ VALID_TXT_BYTES = (
 )
 
 
-def _mock_embeddings_instance(dim: int = 768, value: float = 0.1) -> MagicMock:
-    """Crea un mock de GoogleGenerativeAIEmbeddings que retorna vectores deterministicos, sin llamadas reales."""
-    instance = MagicMock()
+def _patched_ingestion_embeddings(dim: int = 768, value: float = 0.1):
+    """Mockea openrouter_client.create_embeddings con vectores deterministicos, sin llamadas reales."""
 
-    async def _aembed_documents(texts):
+    async def _create_embeddings(texts, model, dimensions):
         return [[value] * dim for _ in texts]
 
-    async def _aembed_query(text):
-        return [value] * dim
-
-    instance.aembed_documents = AsyncMock(side_effect=_aembed_documents)
-    instance.aembed_query = AsyncMock(side_effect=_aembed_query)
-    return instance
-
-
-def _patched_ingestion_embeddings():
     return patch(
-        "app.services.ingestion_service.GoogleGenerativeAIEmbeddings",
-        return_value=_mock_embeddings_instance(),
+        "app.services.openrouter_client.create_embeddings", new=AsyncMock(side_effect=_create_embeddings)
     )
 
 

@@ -13,9 +13,9 @@ endpoints HTTP publicos de la Fase 2 — no toca la base de datos directamente.
 
 - El stack Docker debe estar corriendo: `docker compose up -d` (o `--build` si
   es la primera vez o cambiaste codigo).
-- `GOOGLE_API_KEY` debe ser una API key valida de Google AI Studio en tu `.env`
-  — sin esto, cada documento terminara en `status=error` al intentar generar
-  los embeddings.
+- `OPENROUTER_API_KEY` debe ser una API key valida de OpenRouter, con credito, en tu `.env`
+  — se usa para limpiar/transcribir el PDF y para generar los embeddings
+  (`qwen/qwen3-embedding-8b`). Sin credito, cada documento terminara en `status=error`.
 - Los 8 archivos PDF deben existir en `D:\Descargas\` con los nombres exactos
   listados en `DOCUMENTS` dentro de `ingest_base_corpus.py`. Si tus archivos
   estan en otra carpeta o con otros nombres, edita esa lista antes de correr
@@ -68,7 +68,7 @@ pip install requests
 ```
 (si corres el script con el mismo entorno virtual que usa el backend, o desde
 dentro del contenedor, `requests` ya viene instalada de forma transitiva via
-`langchain`/`google-generativeai`).
+`httpx`/otras dependencias).
 
 Variables opcionales:
 - `BACKEND_BASE_URL` — por defecto `http://localhost:8000`. Cambiala si el
@@ -93,9 +93,9 @@ generados, y la lista de documentos con error (nombre + mensaje).
 ### 5. Si un documento da error
 
 Causas tipicas:
-- **`GOOGLE_API_KEY` invalida o sin cuota**: el `error_message` va a mencionar
-  la API de Google directamente (por ejemplo `API_KEY_INVALID`). Corrige la
-  key en `.env` y reinicia el backend (`docker compose restart backend`).
+- **`OPENROUTER_API_KEY` invalida o sin credito**: el `error_message` va a mencionar
+  `OpenRouter respondio HTTP 401/402`. Corrige la key o recarga credito y reinicia
+  el backend (`docker compose restart backend`).
 - **PDF vacio o ilegible** (por ejemplo un escaneo sin texto, solo imagen):
   el `error_message` sera `Documento vacio o ilegible`. Ese PDF necesita OCR
   antes de poder ingestarse; el script no lo puede resolver solo.

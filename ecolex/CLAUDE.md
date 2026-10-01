@@ -11,11 +11,13 @@ es normativa ambiental general (aire, agua, ruido, licenciamiento, vertimientos)
 
 - Backend: FastAPI async, PostgreSQL 16 con pgvector, SQLAlchemy 2.x, Alembic
 - Auth: JWT access token + refresh token en cookie httpOnly, slowapi rate limiting
-- RAG: LangChain 1.x + pgvector + Google Gemini via el SDK `google-genai`
-  (`langchain-google-genai` 4.x). Modelos: `gemini-embedding-001` (embeddings,
-  truncados a 768 dim con `output_dimensionality` para no romper el esquema
-  `Vector(768)`) y `gemini-3.8-flash` (chat).
-- Parseo de documentos: pypdf, python-docx, texto plano
+- RAG: pgvector + OpenRouter (`app/services/openrouter_client.py`, httpx puro, sin SDK de
+  Google ni LangChain). Modelos: `qwen/qwen3-embedding-8b` (embeddings, recortados a 768 dim
+  con `dimensions` para no romper el esquema `Vector(768)`) y `google/gemini-3.5-flash-lite`
+  (chat, limpieza de texto de PDFs y transcripcion de paginas escaneadas).
+- Parseo de documentos: pdfplumber + clasificador texto/escaneado (PDF), python-docx, texto
+  plano. Chunking semantico por articulo (`chunk_semantic`, ver ingestion_service.py).
+- Reportes PDF de cumplimiento (Fase 3): WeasyPrint (`app/services/report_service.py`).
 - Frontend: Next.js 14 (App Router) + TypeScript + TailwindCSS, componentes estilo
   shadcn/ui (Radix), axios, zustand (sesion). Gestor de paquetes: pnpm.
   Diseno exportado de Stitch ("Ecolex Legal Assistant Platform"): tokens en
@@ -40,6 +42,8 @@ Roles por usuario: `admin`, `analyst`, `viewer`.
 - `/api/v1/documents`: upload, listar, detalle, eliminar
 - `/api/v1/conversations`: crear, listar, renombrar (PATCH title), borrar, mensajes (GET/POST)
 - `/api/v1/users` (solo admin): listar, crear, PATCH rol/is_active, DELETE (desactiva)
+- `/api/v1/reports/conversations/{id}`: genera un informe PDF de cumplimiento a partir del
+  historial de una conversacion (minimo 2 mensajes, rango de fechas opcional)
 - El mensaje del usuario se guarda ANTES de llamar al RAG; si el RAG falla, responde 503
   con envelope y la pregunta no se pierde.
 
@@ -50,47 +54,31 @@ Roles por usuario: `admin`, `analyst`, `viewer`.
   conversaciones con historial
 - Fase 3: script operacional scripts/ingest_base_corpus.py para cargar el corpus base
 - Fase 4: frontend Next.js (login/registro, dashboard, documentos, chat, usuarios)
+- Fase 3 (post-Fase 4): reportes PDF de cumplimiento normativo via WeasyPrint
 - Auditoria: manejo de errores consistente, restricciones de rol en la UI, limpieza del
   modulo `projects` (vestigio del scope anterior de suelos)
+- Rediseno del pipeline de ingesta (clasificador texto/escaneado + OpenRouter + chunking
+  semantico) y migracion de embeddings y chat de Google a OpenRouter (ver secciones abajo)
 
 ## Tests
 
-- 20/21 pasan. Falla `test_auth.py::TestAuth::test_refresh_and_logout_cycle`, fallo
-  **preexistente** (el cliente de pruebas no reenvia la cookie `Secure` por HTTP).
-- Antes eran 22/23: se retiraron 2 tests de `/projects/` junto con el modulo.
+- 31/32 pasan (`docker compose exec backend python -m pytest -q`). Falla
+  `test_auth.py::TestAuth::test_refresh_and_logout_cycle`, fallo **preexistente** (el cliente
+  de pruebas no reenvia la cookie `Secure` por HTTP).
 - No hay tests de `users`, `/auth/me` ni del frontend.
 
 ## Pendiente
 
 - Cambio de contrasena y recuperacion de contrasena (la contrasena que el admin asigna a un
   usuario nuevo no se puede cambiar).
-- Correr `scripts/ingest_base_corpus.py` para cargar el corpus base ahora que el pipeline de
-  embeddings funciona (ver nota de migracion abajo).
 
-## Migracion google-generativeai -> google-genai (2026-09-18)
+## Historial: de Google (langchain-google-genai) a OpenRouter puro
 
-`text-embedding-004` fue descontinuado por Google (2026-01-14) y `gemini-2.0-flash` fue
-apagado el 2026-06-01; ambos devolvian 404. Ademas `google-generativeai` (SDK viejo, usado
-por `langchain-google-genai` 2.0.7) esta deprecado. Cambios:
-- `requirements.txt`: `langchain-google-genai` 2.0.7 -> 4.4.0 (usa el SDK `google-genai`
-  en vez de `google-generativeai`), + `google-genai`, `langchain` 0.3.7 -> 1.4.2 (arrastra
-  `langchain-core` 1.x), `langchain-text-splitters` explicito, `httpx` 0.27.2 -> 0.28.1 y
-  `pydantic` 2.9.2 -> 2.13.4 (requeridos por las nuevas versiones).
-- `ingestion_service.py` / `rag_service.py`: modelo de embeddings ahora
-  `models/gemini-embedding-001` con `output_dimensionality=768` (el default del modelo es
-  3072, pero el esquema `document_chunks.embedding` sigue siendo `Vector(768)`); modelo de
-  chat ahora `gemini-3.8-flash`. Se quito `transport="rest"` (parametro que ya no existe en
-  el SDK nuevo).
-- Import `from langchain.text_splitter import ...` -> `from langchain_text_splitters import ...`
-  (se movio de paquete en langchain 1.x).
-- `generate_response` ahora devuelve `str(response.text)` en vez de `response.content`:
-  en langchain-core 1.x el contenido de `AIMessage` puede venir como lista de bloques
-  (texto + firma de thinking) en vez de string plano, y `Message.content` en la BD es
-  `str`. `.text` concatena solo los bloques de tipo texto.
-- El proxy corporativo interceptaba TLS en las llamadas gRPC de `google-generativeai`; el
-  SDK `google-genai` usa REST/httpx por defecto para la Developer API, lo cual evito el
-  problema en las pruebas dentro del contenedor (ya no hizo falta tocar certificados ni
-  `GRPC_DEFAULT_SSL_ROOTS_FILE_PATH`). Si reaparece un timeout/SSL error, revisar ahi primero.
+El proyecto uso originalmente `langchain-google-genai` + Google AI Studio para embeddings y
+chat (migrado primero de `google-generativeai` a `google-genai` el 2026-09-18 por
+descontinuaciones de modelos). Las dos secciones siguientes (ingesta y embeddings) cubren por
+que y como se reemplazo todo eso por OpenRouter. Hoy no queda codigo ni dependencia de Google
+en el backend: ni `langchain*`, ni `google-genai`, ni `GOOGLE_API_KEY`.
 
 ## Corpus normativo base (tenant _base)
 
@@ -121,3 +109,39 @@ por `langchain-google-genai` 2.0.7) esta deprecado. Cambios:
 - No hardcodear credenciales — todo desde variables de entorno via config.py
 - Frontend: errores HTTP se traducen con `lib/errors.ts` (getErrorMessage) y se muestran
   con `ErrorBanner`; nunca `catch` vacio.
+
+## Pipeline de ingesta de PDFs
+
+`ingestion_service.py`: un clasificador (pdfplumber) separa PDFs con capa de texto de PDFs
+escaneados. Los primeros van pagina por pagina como texto crudo; los escaneados se renderizan
+a imagen (pdf2image/poppler) y se transcriben via un modelo multimodal. Ambos casos pasan por
+OpenRouter (`OPENROUTER_MODEL = "google/gemini-3.5-flash-lite"`) para limpiar artefactos de
+extraccion antes de `chunk_semantic` (chunking por articulo, regex `ART[IÍ]CULO\s+(\d+)`,
+metadata en `DocumentChunk.metadata_`). DOCX/TXT siguen el parseo simple de siempre.
+
+## Embeddings y chat via OpenRouter (2026-09-24)
+
+Los embeddings de Gemini (free tier: 100 req/min) devolvian 429 RESOURCE_EXHAUSTED al
+ingestar varios PDFs a la vez. Ahora `openrouter_client.create_embeddings` llama a
+`POST /embeddings` con `qwen/qwen3-embedding-8b` y `dimensions=768` (MRL: no cambia la columna
+`Vector(768)`). `langchain-google-genai`, `google-genai` y `GOOGLE_API_KEY` se eliminaron del
+proyecto. `ingestion_service._embed_batch` (semaforo de 5) lo usan tanto la ingesta como
+`rag_service._embed_query`. El chat del RAG (`generate_response`, `CHAT_MODEL =
+"google/gemini-3.5-flash-lite"`) tambien pasa por `openrouter_client.chat_completion`.
+IMPORTANTE: los vectores de modelos distintos no son comparables; al cambiar `EMBEDDING_MODEL`
+hay que borrar y re-ingestar todo el corpus. `SCORE_THRESHOLD` se bajo de 0.75 a 0.45: con
+qwen3-embedding-8b, preguntas ajenas al corpus puntuan <=0.29 y preguntas relevantes 0.40-0.72
+(0.75, calibrado para Gemini, descartaba casi todo con el modelo nuevo).
+
+## Multi-consulta en la recuperacion RAG (2026-10-01)
+
+Preguntas de tipo "que necesito para montar una fabrica de X?" tocan varios permisos a la vez
+(vertimientos, emisiones, residuos peligrosos, licenciamiento...), pero una sola busqueda por
+similitud textual solo trae lo mas parecido a la pregunta completa, no un chunk de cada tema.
+`rag_service._expand_query` pide al LLM descomponer la pregunta en hasta `MAX_SUBQUERIES` (4)
+sub-busquedas por tema; `retrieve_relevant_chunks` busca cada una contra pgvector (en paralelo
+con `asyncio.gather`, porque los embeddings son llamadas HTTP independientes a OpenRouter y en
+serie los reintentos por fallos de red transitorios se acumulaban — se vio un caso real de 92s)
+y combina los resultados quedandose con el score mas alto por chunk, hasta `MAX_RELEVANT_CHUNKS`
+(10). Si `_expand_query` falla, se degrada a buscar solo con la pregunta original. La ruta
+SQLite de los tests (sin pgvector real) no usa expansion: no hay similitud real que aprovechar.

@@ -6,32 +6,25 @@ import uuid
 
 import pdfplumber
 from docx import Document as DocxDocument
-from google.genai.errors import ClientError
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from langchain_google_genai.embeddings import GoogleGenerativeAIError
 from pdf2image import convert_from_bytes
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import database as app_database
-from app.config import settings
 from app.logging_config import get_logger
 from app.models.document import Document, DocumentChunk, DocumentStatus
 from app.services import openrouter_client
 
 logger = get_logger(__name__)
 
-EMBEDDING_MODEL = "models/gemini-embedding-001"
+# qwen3-embedding esta entrenado con Matryoshka (MRL): recortar a 768 dims conserva la calidad
+# y evita migrar la columna Vector(768). Cambiar de modelo obliga a re-ingestar todo el corpus.
+EMBEDDING_MODEL = "qwen/qwen3-embedding-8b"
 EMBEDDING_DIMENSIONS = 768
-EMBEDDING_BATCH_SIZE = 20
-EMBEDDING_BATCH_TIMEOUT_SECONDS = 60
+EMBEDDING_BATCH_SIZE = 32
 EMBEDDING_MAX_CONCURRENT_REQUESTS = 5
-EMBEDDING_RETRY_ATTEMPTS = 3
-EMBEDDING_RETRY_BACKOFF_SECONDS = (2, 4, 8)
 
 # Semaforo global del proceso: varios documentos se procesan en paralelo (uno por background
-# task) y todos llaman a embed_content contra la misma cuota de la cuenta de Google AI Studio.
-# Sin esto, N documentos concurrentes multiplican los requests/minuto y disparan 429
-# RESOURCE_EXHAUSTED (visto en produccion con Decreto 1076, Res. 627 y 909 procesando a la vez).
+# task) y todos comparten la cuenta de OpenRouter. openrouter_client ya reintenta los 429.
 _embed_semaphore = asyncio.Semaphore(EMBEDDING_MAX_CONCURRENT_REQUESTS)
 
 # PDFs con texto van con el texto crudo de cada pagina; PDFs escaneados (sin capa de texto)
@@ -267,61 +260,22 @@ def chunk_semantic(pages: list[tuple[int | None, str]]) -> list[dict]:
     return chunks
 
 
-def _is_rate_limit_error(exc: Exception) -> bool:
-    """Detecta un 429 RESOURCE_EXHAUSTED de la API de embeddings de Google, incluso envuelto
-    en GoogleGenerativeAIError (ver langchain_google_genai.embeddings)."""
-    cause = exc.__cause__ if isinstance(exc, GoogleGenerativeAIError) else exc
-    return isinstance(cause, ClientError) and cause.code == 429
-
-
-async def _embed_batch_with_retry(embedder: GoogleGenerativeAIEmbeddings, batch: list[str]) -> list[list[float]]:
-    """Genera embeddings de un batch bajo el semaforo global, con retry exponencial ante 429."""
+async def _embed_batch(batch: list[str]) -> list[list[float]]:
+    """Genera embeddings de un batch bajo el semaforo global (los reintentos ante 429 o 5xx
+    los maneja openrouter_client)."""
     async with _embed_semaphore:
-        for attempt in range(EMBEDDING_RETRY_ATTEMPTS):
-            try:
-                return await asyncio.wait_for(
-                    embedder.aembed_documents(batch), timeout=EMBEDDING_BATCH_TIMEOUT_SECONDS
-                )
-            except asyncio.TimeoutError as exc:
-                raise TimeoutError(
-                    f"Timeout generando embeddings: el batch no respondio en {EMBEDDING_BATCH_TIMEOUT_SECONDS}s"
-                ) from exc
-            except Exception as exc:
-                is_last_attempt = attempt == EMBEDDING_RETRY_ATTEMPTS - 1
-                if not _is_rate_limit_error(exc) or is_last_attempt:
-                    raise
-                wait_seconds = EMBEDDING_RETRY_BACKOFF_SECONDS[attempt]
-                logger.warning(
-                    "Rate limit de embeddings (intento %d/%d), reintentando en %ds",
-                    attempt + 1,
-                    EMBEDDING_RETRY_ATTEMPTS,
-                    wait_seconds,
-                )
-                await asyncio.sleep(wait_seconds)
-
-        raise RuntimeError("No se pudo generar el batch de embeddings tras los reintentos")
+        return await openrouter_client.create_embeddings(batch, EMBEDDING_MODEL, EMBEDDING_DIMENSIONS)
 
 
 async def embed_chunks(chunks: list[str]) -> list[list[float]]:
     """Genera embeddings para una lista de chunks, en batches de EMBEDDING_BATCH_SIZE.
 
     Un semaforo global (_embed_semaphore) limita a EMBEDDING_MAX_CONCURRENT_REQUESTS batches
-    concurrentes entre TODOS los documentos que se procesan en paralelo, y cada batch reintenta
-    con backoff exponencial si la API responde 429 RESOURCE_EXHAUSTED.
+    concurrentes entre TODOS los documentos que se procesan en paralelo.
     """
-    embedder = GoogleGenerativeAIEmbeddings(
-        model=EMBEDDING_MODEL,
-        google_api_key=settings.GOOGLE_API_KEY,
-        output_dimensionality=EMBEDDING_DIMENSIONS,
-    )
-
     vectors: list[list[float]] = []
     for i in range(0, len(chunks), EMBEDDING_BATCH_SIZE):
-        batch = chunks[i : i + EMBEDDING_BATCH_SIZE]
-        batch_vectors = await _embed_batch_with_retry(embedder, batch)
-        vectors.extend(batch_vectors)
-        await asyncio.sleep(2)
-
+        vectors.extend(await _embed_batch(chunks[i : i + EMBEDDING_BATCH_SIZE]))
     return vectors
 
 

@@ -1,20 +1,15 @@
+import asyncio
 import uuid
 
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from sqlalchemy import bindparam, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
 from app.logging_config import get_logger
 from app.models.conversation import Conversation, Message, MessageRole
 from app.models.document import Document, DocumentChunk
 from app.models.tenant import Tenant
 from app.services import openrouter_client
-from app.services.ingestion_service import (
-    EMBEDDING_DIMENSIONS,
-    EMBEDDING_MODEL,
-    _embed_batch_with_retry,
-)
+from app.services.ingestion_service import _embed_batch
 
 logger = get_logger(__name__)
 
@@ -26,8 +21,19 @@ OPENROUTER_MAX_TOKENS = 2048
 
 BASE_TENANT_SLUG = "_base"
 HISTORY_MESSAGE_LIMIT = 10
-SCORE_THRESHOLD = 0.75
+# Calibrado empiricamente con qwen/qwen3-embedding-8b (ver CLAUDE.md): preguntas totalmente
+# ajenas al corpus (ej. "receta de pasta") puntuan <=0.29; preguntas relevantes, 0.40-0.72.
+# 0.75 (calibrado para Gemini) descartaba casi todo con el modelo nuevo.
+SCORE_THRESHOLD = 0.45
 TITLE_MAX_WORDS = 6
+
+# Preguntas de tipo "que necesito para montar una fabrica de metalurgia?" tocan varios permisos
+# a la vez (emisiones, vertimientos, residuos peligrosos, licenciamiento...), pero una sola
+# busqueda por similitud textual solo trae lo mas parecido A LA PREGUNTA COMPLETA, no un chunk
+# representativo de cada tema. _expand_query descompone la pregunta en sub-busquedas por tema
+# para cubrir varios permisos en una misma respuesta (ver retrieve_relevant_chunks).
+MAX_SUBQUERIES = 4
+MAX_RELEVANT_CHUNKS = 10
 
 SYSTEM_PROMPT = (
     "Eres un asistente legal especializado en normativa ambiental colombiana. Respondes "
@@ -51,6 +57,21 @@ FALLBACK_MESSAGE = (
     "¿Podrías reformularla o ser más específico?"
 )
 
+EXPANSION_SYSTEM_PROMPT = (
+    "Eres un asistente que prepara busquedas sobre un corpus de normativa ambiental "
+    "colombiana (Decreto 1076 de 2015 y sus resoluciones: vertimientos, emisiones "
+    "atmosfericas, recurso hidrico, ruido, residuos peligrosos, licenciamiento ambiental, "
+    "entre otros).\n"
+    "Dada la pregunta de un usuario, identifica los distintos permisos o tramites "
+    "ambientales que le aplicarian (por ejemplo, si pregunta por montar una actividad o "
+    "empresa, piensa en TODOS los permisos que normalmente necesitaria: vertimientos, "
+    "emisiones al aire, generacion de residuos peligrosos, concesion de aguas, licencia "
+    "ambiental, etc.).\n"
+    "Genera entre 1 y 4 busquedas cortas (una frase cada una), una por linea, sin numeracion "
+    "ni guiones ni explicaciones, cada una enfocada en UN solo tema/permiso. Si la pregunta ya "
+    "es puntual y trata un solo tema, genera una unica busqueda igual o muy similar a ella."
+)
+
 
 async def _get_base_tenant_id(db: AsyncSession) -> uuid.UUID | None:
     """Obtiene el id del tenant del sistema (_base) que contiene el corpus normativo compartido."""
@@ -67,16 +88,35 @@ async def _get_document_filenames(db: AsyncSession, document_ids: set[uuid.UUID]
 
 
 async def _embed_query(query: str) -> list[float]:
-    """Genera el embedding de una query reutilizando EXACTAMENTE la misma logica (semaforo
-    global y retry con backoff ante 429) que usa ingestion_service.embed_chunks, en vez de
-    duplicarla."""
-    embedder = GoogleGenerativeAIEmbeddings(
-        model=EMBEDDING_MODEL,
-        google_api_key=settings.GOOGLE_API_KEY,
-        output_dimensionality=EMBEDDING_DIMENSIONS,
-    )
-    vectors = await _embed_batch_with_retry(embedder, [query])
+    """Genera el embedding de una query con el mismo modelo y semaforo que la ingesta."""
+    vectors = await _embed_batch([query])
     return vectors[0]
+
+
+async def _expand_query(query: str) -> list[str]:
+    """Descompone la pregunta del usuario en sub-busquedas por tema/permiso ambiental (ver
+    EXPANSION_SYSTEM_PROMPT), para que preguntas que abarcan varios permisos a la vez (ej. "que
+    necesito para montar una fabrica de metalurgia?") puedan recuperar chunks de cada tema en
+    vez de solo los mas parecidos a la pregunta completa.
+
+    Es una mejora de recall, no un paso critico: si el LLM falla, retorna [] y el llamador cae
+    de vuelta a buscar solo con la pregunta original.
+    """
+    try:
+        raw = await openrouter_client.chat_completion(
+            [
+                {"role": "system", "content": EXPANSION_SYSTEM_PROMPT},
+                {"role": "user", "content": query},
+            ],
+            model=CHAT_MODEL,
+            max_tokens=200,
+        )
+    except Exception:
+        logger.warning("No se pudo expandir la consulta en sub-busquedas, se usara solo la original")
+        return []
+
+    subqueries = [line.strip("-*• \t") for line in raw.splitlines()]
+    return [sub for sub in subqueries if sub][:MAX_SUBQUERIES]
 
 
 async def retrieve_relevant_chunks(
@@ -86,9 +126,15 @@ async def retrieve_relevant_chunks(
     base (_base) compartido. El filtro por tenant_id garantiza que nunca se cruzan datos entre
     tenants distintos.
 
-    Devuelve una lista de dicts (content, score, document_id, chunk_index, numero_articulo,
-    pagina_origen), solo con los chunks cuyo score de similitud supere SCORE_THRESHOLD. Lista
-    vacia si ninguno lo supera.
+    En Postgres, la pregunta se expande primero en sub-busquedas por tema (_expand_query) y se
+    hace una busqueda vectorial por cada una (top_k resultados cada una); los resultados se
+    combinan quedandose con el score mas alto por chunk, para poder cubrir preguntas que tocan
+    varios permisos/temas a la vez sin que una sola busqueda por similitud textual aplaste a
+    los temas menos parecidos a la pregunta completa.
+
+    Devuelve una lista de hasta MAX_RELEVANT_CHUNKS dicts (content, score, document_id,
+    chunk_index, numero_articulo, pagina_origen), ordenada por score descendente, solo con los
+    chunks cuyo score supere SCORE_THRESHOLD. Lista vacia si ninguno lo supera.
     """
     base_tenant_id = await _get_base_tenant_id(db)
     tenant_ids = [tid for tid in (tenant_id, base_tenant_id) if tid is not None]
@@ -97,6 +143,7 @@ async def retrieve_relevant_chunks(
     if dialect_name != "postgresql":
         # pgvector no esta disponible en SQLite (tests): se filtra solo por tenant, sin ranking
         # real por similitud (se asume score maximo para poder probar el flujo sin Postgres).
+        # No hay expansion de query: sin similitud real, no aporta nada y solo gastaria llamadas.
         result = await db.execute(
             select(DocumentChunk)
             .where(DocumentChunk.tenant_id.in_(tenant_ids))
@@ -114,35 +161,52 @@ async def retrieve_relevant_chunks(
             for chunk in result.scalars().all()
         ]
     else:
-        query_vector = await _embed_query(query)
-        vector_literal = "[" + ",".join(f"{v:.8f}" for v in query_vector) + "]"
+        search_queries = [query]
+        for subquery in await _expand_query(query):
+            if subquery not in search_queries:
+                search_queries.append(subquery)
 
-        stmt = text(
-            """
-            SELECT content, document_id, chunk_index, metadata_,
-                   1 - (embedding <=> CAST(:query_embedding AS vector)) AS score
-            FROM document_chunks
-            WHERE (tenant_id = :tenant_id OR tenant_id = :base_tenant_id)
-            ORDER BY embedding <=> CAST(:query_embedding AS vector)
-            LIMIT :k
-            """
-        ).bindparams(
-            bindparam("tenant_id", value=tenant_id),
-            bindparam("base_tenant_id", value=base_tenant_id),
-            bindparam("query_embedding", value=vector_literal),
-            bindparam("k", value=top_k),
-        )
-        result = await db.execute(stmt)
-        candidates = [
-            {
-                "content": row["content"],
-                "score": float(row["score"]),
-                "document_id": row["document_id"],
-                "chunk_index": row["chunk_index"],
-                "metadata_": row["metadata_"] or {},
-            }
-            for row in result.mappings().all()
-        ]
+        # Los embeddings de las sub-consultas se piden en paralelo: son llamadas HTTP a
+        # OpenRouter independientes entre si y, en serie, los reintentos ante fallos de red
+        # transitorios se acumulan (visto en vivo: >90s para 5 sub-consultas). Las busquedas en
+        # Postgres si quedan en serie porque comparten la misma AsyncSession (no es seguro
+        # ejecutar queries concurrentes sobre la misma sesion), pero son locales y rapidas.
+        query_vectors = await asyncio.gather(*(_embed_query(sq) for sq in search_queries))
+
+        best_by_chunk: dict[tuple[uuid.UUID, int], dict] = {}
+        for query_vector in query_vectors:
+            vector_literal = "[" + ",".join(f"{v:.8f}" for v in query_vector) + "]"
+
+            stmt = text(
+                """
+                SELECT content, document_id, chunk_index, metadata_,
+                       1 - (embedding <=> CAST(:query_embedding AS vector)) AS score
+                FROM document_chunks
+                WHERE (tenant_id = :tenant_id OR tenant_id = :base_tenant_id)
+                ORDER BY embedding <=> CAST(:query_embedding AS vector)
+                LIMIT :k
+                """
+            ).bindparams(
+                bindparam("tenant_id", value=tenant_id),
+                bindparam("base_tenant_id", value=base_tenant_id),
+                bindparam("query_embedding", value=vector_literal),
+                bindparam("k", value=top_k),
+            )
+            result = await db.execute(stmt)
+
+            for row in result.mappings().all():
+                key = (row["document_id"], row["chunk_index"])
+                score = float(row["score"])
+                if key not in best_by_chunk or score > best_by_chunk[key]["score"]:
+                    best_by_chunk[key] = {
+                        "content": row["content"],
+                        "score": score,
+                        "document_id": row["document_id"],
+                        "chunk_index": row["chunk_index"],
+                        "metadata_": row["metadata_"] or {},
+                    }
+
+        candidates = sorted(best_by_chunk.values(), key=lambda c: c["score"], reverse=True)
 
     return [
         {
@@ -155,7 +219,7 @@ async def retrieve_relevant_chunks(
         }
         for c in candidates
         if c["score"] > SCORE_THRESHOLD
-    ]
+    ][:MAX_RELEVANT_CHUNKS]
 
 
 async def generate_response(
