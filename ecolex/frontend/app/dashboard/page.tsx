@@ -8,7 +8,17 @@ import { formatDate } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { ErrorBanner } from "@/components/ui/error-banner";
 import { getErrorMessage } from "@/lib/errors";
-import type { ApiEnvelope, ConversationItem, DocumentItem, PaginatedResponse } from "@/lib/types";
+import { ActivityChart } from "@/components/dashboard/activity-chart";
+import { DocumentsStatusChart } from "@/components/dashboard/documents-status-chart";
+import { DocumentsTypeChart } from "@/components/dashboard/documents-type-chart";
+import { TopCitedChart } from "@/components/dashboard/top-cited-chart";
+import type {
+  ApiEnvelope,
+  ConversationItem,
+  DashboardStats,
+  DocumentItem,
+  PaginatedResponse,
+} from "@/lib/types";
 
 const STATUS_VARIANT = {
   ready: "ready",
@@ -31,13 +41,14 @@ export default function DashboardPage() {
   const [readyCount, setReadyCount] = useState(0);
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
   const [conversationsTotal, setConversationsTotal] = useState(0);
+  const [stats, setStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     async function load() {
       try {
-        const [docsRes, readyRes, convosRes] = await Promise.all([
+        const [docsRes, readyRes, convosRes, statsRes] = await Promise.all([
           api.get<ApiEnvelope<PaginatedResponse<DocumentItem>>>("/api/v1/documents/", {
             params: { page_size: 5 },
           }),
@@ -47,6 +58,7 @@ export default function DashboardPage() {
           api.get<ApiEnvelope<PaginatedResponse<ConversationItem>>>("/api/v1/conversations/", {
             params: { page_size: 5 },
           }),
+          api.get<ApiEnvelope<DashboardStats>>("/api/v1/stats/dashboard"),
         ]);
 
         setDocuments(docsRes.data.data.items);
@@ -54,6 +66,7 @@ export default function DashboardPage() {
         setReadyCount(readyRes.data.data.total);
         setConversations(convosRes.data.data.items);
         setConversationsTotal(convosRes.data.data.total);
+        setStats(statsRes.data.data);
       } catch (err) {
         setError(getErrorMessage(err, "No se pudo cargar el resumen del dashboard."));
       } finally {
@@ -113,6 +126,15 @@ export default function DashboardPage() {
           </div>
         </div>
       </div>
+
+      {stats && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-space-lg">
+          <DocumentsStatusChart data={stats.documents_by_status} />
+          <DocumentsTypeChart data={stats.documents_by_type} />
+          <ActivityChart data={stats.activity_last_14_days} />
+          <TopCitedChart data={stats.top_cited_documents} />
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-space-lg">
         <div className="bg-surface-container-lowest p-space-lg rounded-xl shadow-sm flex flex-col">

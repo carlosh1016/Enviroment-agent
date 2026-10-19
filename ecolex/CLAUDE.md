@@ -47,6 +47,8 @@ Roles por usuario: `admin`, `analyst`, `viewer`.
 - `/api/v1/users` (solo admin): listar, crear, PATCH rol/is_active, DELETE (desactiva)
 - `/api/v1/reports/conversations/{id}`: genera un informe PDF de cumplimiento a partir del
   historial de una conversacion (minimo 2 mensajes, rango de fechas opcional)
+- `/api/v1/stats/dashboard`: agregados para las graficas del dashboard (documentos por
+  estado/tipo, actividad de los ultimos 14 dias, documentos mas citados en el chat)
 - El mensaje del usuario se guarda ANTES de llamar al RAG; si el RAG falla, responde 503
   con envelope y la pregunta no se pierde.
 
@@ -165,3 +167,32 @@ nunca declara el charset real en archivos reales, y decodificar a ciegas rompe l
 Tambien se corrigio un bug preexistente: el mensaje de error y la validacion del frontend decian
 "10MB" pero `MAX_FILE_SIZE_BYTES` real es 50MB (el frontend bloqueaba de mas, antes de llegar al
 backend).
+
+## Reportes y dashboard con graficas (2026-10-19)
+
+El endpoint de reportes (Fase 3) no tenia NINGUN punto de entrada en el frontend -- se podia
+probar solo con curl/Postman. Se conecto: boton "Descargar informe" en `chat/[id]/page.tsx`
+(`lib/reports.ts`, descarga via blob + `<a download>`). De paso se agrego
+`errors.ts:getBlobErrorMessage()` (version async de `getErrorMessage()`): un request con
+`responseType: "blob"` tambien recibe el BODY DEL ERROR como Blob, no como el envelope ya
+parseado, asi que sin esto se perdia el mensaje especifico del backend (ej. "Se necesitan al
+menos 2 mensajes...") detras de un generico de status code.
+
+El "dashboard" (`app/dashboard/page.tsx`) antes solo mostraba 2 numeros (documentos
+listos/total, conversaciones) -- no tenia graficas ni estaba conectado al reporte. Se agrego
+`GET /api/v1/stats/dashboard` (`routers/stats.py`), siempre acotado al tenant actual, con 4
+agregados: documentos por status/tipo (excluye el corpus base, igual que GET /documents),
+actividad (conversaciones/mensajes) de los ultimos 14 dias, y documentos mas citados en
+`source_chunks` de las respuestas del asistente (SI incluye el corpus base: refleja que normas
+consulta mas el equipo). El bucketing por dia se hace en Python, no con funciones de fecha de
+Postgres (`date_trunc`), para que la query funcione igual en SQLite (tests).
+
+Frontend: libreria `recharts` (v3, compatible con React 18) + 4 componentes en
+`components/dashboard/` (donut de status, barras de tipo, lineas de actividad, barras
+horizontales de mas citados), con los colores de marca de Ecolex (`primary`/`secondary`/`sage`
+del tema, mismos verdes que `badge.tsx` para status). IMPORTANTE: instalar una dependencia
+nueva (`pnpm add`) mientras `next dev` ya estaba corriendo dejo su cache de webpack
+desincronizada con el nuevo layout del store de pnpm (`ModuleBuildError: ENOENT .../zustand/esm/index.mjs`
+al servir /dashboard) -- hubo que matar el proceso viejo, borrar `.next/` y levantar `pnpm dev`
+de nuevo. Si vuelve a pasar tras instalar una dependencia, ese es el primer diagnostico a
+probar.

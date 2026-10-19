@@ -12,7 +12,7 @@ from app.config import settings
 from app.database import engine
 from app.limiter import limiter
 from app.logging_config import configure_logging, get_logger
-from app.routers import auth, conversations, documents, reports, users
+from app.routers import auth, conversations, documents, reports, stats, users
 
 configure_logging()
 logger = get_logger(__name__)
@@ -98,4 +98,5 @@ app.include_router(auth.router)
 app.include_router(documents.router)
 app.include_router(conversations.router)
 app.include_router(reports.router)
+app.include_router(stats.router)
 app.include_router(users.router)

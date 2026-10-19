@@ -78,6 +78,26 @@ export interface ManagedUser {
   created_at: string;
 }
 
+/** GET /api/v1/stats/dashboard: agregados para las graficas del dashboard. */
+export interface DayActivity {
+  date: string;
+  conversations: number;
+  messages: number;
+}
+
+export interface CitedDocument {
+  document_id: string;
+  document_name: string;
+  citations: number;
+}
+
+export interface DashboardStats {
+  documents_by_status: Record<string, number>;
+  documents_by_type: Record<string, number>;
+  activity_last_14_days: DayActivity[];
+  top_cited_documents: CitedDocument[];
+}
+
 export interface ApiEnvelope<T> {
   success: boolean;
   message?: string;
