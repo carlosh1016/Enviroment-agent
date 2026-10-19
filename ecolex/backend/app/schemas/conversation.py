@@ -54,7 +54,11 @@ class SourceChunkRead(BaseModel):
     """
 
     document_id: uuid.UUID
-    document_name: str
+    # Opcional (default None): mensajes guardados ANTES de que chat() empezara a incluir
+    # document_name en source_chunks (ver rag_service.chat()) no lo tienen. Si fuera
+    # obligatorio, GET /conversations/{id}/messages revienta con un ValidationError al leer
+    # cualquier conversacion vieja con fuentes -- bug real, detectado en produccion.
+    document_name: str | None = None
     chunk_index: int
     score: float
     numero_articulo: str | None = None

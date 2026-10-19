@@ -68,7 +68,7 @@ export function MessageBubble({ message }: { message: MessageItem }) {
                     >
                       <span className="flex items-center gap-1 font-label-md text-label-md text-on-surface font-semibold truncate">
                         <span className="material-symbols-outlined text-[14px] flex-shrink-0">description</span>
-                        {source.document_name}
+                        {source.document_name ?? "Documento"}
                       </span>
                       <span className="font-body-sm text-body-sm text-outline">
                         {source.numero_articulo ? `Artículo ${source.numero_articulo}` : `Fragmento #${source.chunk_index}`}

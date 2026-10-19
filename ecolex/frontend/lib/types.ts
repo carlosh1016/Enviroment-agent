@@ -51,7 +51,8 @@ export type MessageRole = "user" | "assistant";
 
 export interface SourceChunk {
   document_id: string;
-  document_name: string;
+  // Null en mensajes guardados antes de que el backend empezara a incluirlo.
+  document_name: string | null;
   chunk_index: number;
   score: number;
   numero_articulo?: string | null;
