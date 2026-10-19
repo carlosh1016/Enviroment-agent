@@ -39,6 +39,11 @@ class User(Base):
         default=UserRole.VIEWER,
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Recuperacion de contrasena (ver auth_service.request_password_reset/reset_password):
+    # hash SHA-256 (no bcrypt) del token de un solo uso vigente, y su expiracion. Un unico
+    # token activo a la vez por usuario (generar uno nuevo invalida cualquier anterior).
+    reset_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    reset_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

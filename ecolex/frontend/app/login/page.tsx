@@ -14,7 +14,7 @@ import { Label } from "@/components/ui/label";
 import { EcolexMark } from "@/components/ecolex/logo";
 import type { ApiEnvelope } from "@/lib/types";
 
-type Mode = "login" | "register";
+type Mode = "login" | "register" | "forgot";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -26,6 +26,7 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [forgotMessage, setForgotMessage] = useState<string | null>(null);
 
   const slugPreview = slugify(companyName);
 
@@ -77,6 +78,21 @@ export default function LoginPage() {
       } else {
         setError(getErrorMessage(err, "No se pudo completar el registro. Intenta de nuevo."));
       }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleForgotPassword(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setForgotMessage(null);
+    setLoading(true);
+    try {
+      const response = await api.post<ApiEnvelope<null>>("/auth/forgot-password", { email });
+      setForgotMessage(response.data.message ?? "Si el correo está registrado, se generó un enlace de recuperación.");
+    } catch (err) {
+      setError(getErrorMessage(err, "No se pudo procesar la solicitud. Intenta de nuevo."));
     } finally {
       setLoading(false);
     }
@@ -149,7 +165,7 @@ export default function LoginPage() {
                   Portal Legal Corporativo
                 </span>
                 <h2 className="font-headline-md text-headline-md text-primary font-bold">
-                  {mode === "login" ? "Bienvenido" : "Crear Cuenta Corporativa"}
+                  {mode === "login" ? "Bienvenido" : mode === "register" ? "Crear Cuenta Corporativa" : "Recuperar Contraseña"}
                 </h2>
               </div>
               <div className="w-10 h-10 rounded-full bg-surface-container flex items-center justify-center text-secondary">
@@ -157,31 +173,76 @@ export default function LoginPage() {
               </div>
             </div>
 
-            <div className="w-full bg-surface-container p-1 rounded-lg flex items-center mb-space-lg shadow-inner">
-              <button
-                type="button"
-                onClick={() => setMode("login")}
-                className={`flex-1 py-2 px-3 rounded-md font-label-md text-label-md transition-all duration-200 ${
-                  mode === "login"
-                    ? "bg-surface-container-lowest text-primary shadow-sm font-semibold"
-                    : "text-on-surface-variant hover:text-primary"
-                }`}
-              >
-                Iniciar Sesión
-              </button>
-              <button
-                type="button"
-                onClick={() => setMode("register")}
-                className={`flex-1 py-2 px-3 rounded-md font-label-md text-label-md transition-all duration-200 ${
-                  mode === "register"
-                    ? "bg-surface-container-lowest text-primary shadow-sm font-semibold"
-                    : "text-on-surface-variant hover:text-primary"
-                }`}
-              >
-                Crear Cuenta
-              </button>
-            </div>
+            {mode !== "forgot" && (
+              <div className="w-full bg-surface-container p-1 rounded-lg flex items-center mb-space-lg shadow-inner">
+                <button
+                  type="button"
+                  onClick={() => setMode("login")}
+                  className={`flex-1 py-2 px-3 rounded-md font-label-md text-label-md transition-all duration-200 ${
+                    mode === "login"
+                      ? "bg-surface-container-lowest text-primary shadow-sm font-semibold"
+                      : "text-on-surface-variant hover:text-primary"
+                  }`}
+                >
+                  Iniciar Sesión
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMode("register")}
+                  className={`flex-1 py-2 px-3 rounded-md font-label-md text-label-md transition-all duration-200 ${
+                    mode === "register"
+                      ? "bg-surface-container-lowest text-primary shadow-sm font-semibold"
+                      : "text-on-surface-variant hover:text-primary"
+                  }`}
+                >
+                  Crear Cuenta
+                </button>
+              </div>
+            )}
 
+            {mode === "forgot" ? (
+              <form className="space-y-space-md" onSubmit={handleForgotPassword}>
+                <p className="font-body-sm text-body-sm text-on-surface-variant">
+                  Escribe tu correo corporativo y te enviaremos un enlace para restablecer tu contraseña.
+                </p>
+                <div className="space-y-1">
+                  <Label>Correo Electrónico Corporativo</Label>
+                  <Input
+                    type="email"
+                    placeholder="cumplimiento@empresa.com.co"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    required
+                  />
+                </div>
+
+                <ErrorBanner message={error} />
+                {forgotMessage && (
+                  <p
+                    role="status"
+                    className="font-body-sm text-body-sm text-secondary bg-secondary-container/40 rounded-lg px-3 py-2"
+                  >
+                    {forgotMessage}
+                  </p>
+                )}
+
+                <Button type="submit" disabled={loading} className="w-full mt-space-sm">
+                  <span>{loading ? "Enviando..." : "Enviar enlace de recuperación"}</span>
+                </Button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMode("login");
+                    setError(null);
+                    setForgotMessage(null);
+                  }}
+                  className="w-full text-center font-label-md text-label-md text-secondary hover:text-primary mt-space-xs"
+                >
+                  Volver a iniciar sesión
+                </button>
+              </form>
+            ) : (
             <form
               className="space-y-space-md"
               onSubmit={mode === "login" ? handleLogin : handleRegister}
@@ -224,6 +285,19 @@ export default function LoginPage() {
                   minLength={8}
                   required
                 />
+                {mode === "login" && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMode("forgot");
+                      setError(null);
+                      setForgotMessage(null);
+                    }}
+                    className="font-label-sm text-label-sm text-secondary hover:text-primary mt-1"
+                  >
+                    ¿Olvidaste tu contraseña?
+                  </button>
+                )}
               </div>
 
               <ErrorBanner message={error} />
@@ -239,6 +313,7 @@ export default function LoginPage() {
                 <span className="material-symbols-outlined text-body-md">arrow_forward</span>
               </Button>
             </form>
+            )}
 
             <div className="mt-space-xl pt-space-md border-t border-surface-variant text-center">
               <p className="font-label-sm text-label-sm text-outline">

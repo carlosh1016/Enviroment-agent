@@ -37,6 +37,28 @@ class UserRead(BaseModel):
     updated_at: datetime
 
 
+class ChangePasswordRequest(BaseModel):
+    """Datos para que un usuario autenticado cambie su propia contrasena."""
+
+    current_password: str
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+class ForgotPasswordRequest(BaseModel):
+    """Solicitud de recuperacion de contrasena. tenant_slug es opcional, igual que en login
+    (ver LoginRequest): desambigua si el mismo email existe en mas de un tenant."""
+
+    email: EmailStr
+    tenant_slug: str | None = None
+
+
+class ResetPasswordRequest(BaseModel):
+    """Completa la recuperacion de contrasena con el token emitido por /auth/forgot-password."""
+
+    token: str
+    new_password: str = Field(min_length=8, max_length=128)
+
+
 class TokenResponse(BaseModel):
     """Respuesta de login/refresh: el access token viaja en el cuerpo de la respuesta."""
 

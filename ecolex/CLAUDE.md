@@ -74,8 +74,10 @@ Roles por usuario: `admin`, `analyst`, `viewer`.
 
 ## Pendiente
 
-- Cambio de contrasena y recuperacion de contrasena (la contrasena que el admin asigna a un
-  usuario nuevo no se puede cambiar).
+- Nada funcional pendiente por ahora (ver seccion de cambio/recuperacion de contrasena abajo,
+  resuelto el 2026-10-19). Quedan abiertos: cobertura de tests de `/auth/me`/`users`/frontend,
+  CI/CD y despliegue real, y lo necesario para un plan Empresarial (SSO, logs de auditoria, API
+  publica, instancia dedicada) si se llega a vender a una empresa grande.
 
 ## Historial: de Google (langchain-google-genai) a OpenRouter puro
 
@@ -196,3 +198,22 @@ desincronizada con el nuevo layout del store de pnpm (`ModuleBuildError: ENOENT 
 al servir /dashboard) -- hubo que matar el proceso viejo, borrar `.next/` y levantar `pnpm dev`
 de nuevo. Si vuelve a pasar tras instalar una dependencia, ese es el primer diagnostico a
 probar.
+
+## Cambio y recuperacion de contrasena (2026-10-19)
+
+Ya no es un pendiente. `PATCH /auth/me/password` (autenticado, valida la contrasena actual) y el
+flujo de dos pasos `/auth/forgot-password` + `/auth/reset-password`.
+
+Decisiones de seguridad relevantes si se retoma esto:
+- El token de reset se guarda en `users.reset_token_hash` con **SHA-256, no bcrypt**: a
+  diferencia de una contrasena, el token ya es aleatorio y de alta entropia
+  (`secrets.token_urlsafe(32)`), y necesita ser buscable por igualdad en la DB (bcrypt genera un
+  hash distinto cada vez para el mismo input, lo cual haria imposible ese lookup).
+- `/forgot-password` SIEMPRE responde el mismo mensaje generico, exista o no el email/tenant:
+  revelar si una cuenta existe permite enumerar usuarios validos.
+- Este proyecto NO tiene un proveedor de email configurado: el token "se envia" solo via
+  `logger.info` (ver `auth_service.request_password_reset`). Para produccion real, reemplazar
+  ese log por un envio real (Resend, SES, etc.) con un link a `/reset-password?token=...`
+  (pagina ya construida en el frontend, falta solo el envio).
+- Un unico token activo a la vez por usuario (columna en `users`, no una tabla aparte): generar
+  uno nuevo invalida cualquier anterior. Vence a los 30 minutos (`PASSWORD_RESET_EXPIRE_MINUTES`).

@@ -10,11 +10,25 @@ from app.logging_config import get_logger
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas import success_response
-from app.schemas.user import LoginRequest, RegisterRequest, TokenResponse, UserRead
+from app.schemas.user import (
+    ChangePasswordRequest,
+    ForgotPasswordRequest,
+    LoginRequest,
+    RegisterRequest,
+    ResetPasswordRequest,
+    TokenResponse,
+    UserRead,
+)
 from app.services import auth_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 logger = get_logger(__name__)
+
+# Mismo mensaje exista o no el email/tenant_slug: ver auth_service.request_password_reset.
+FORGOT_PASSWORD_MESSAGE = (
+    "Si el correo esta registrado, se genero un enlace de recuperacion valido por "
+    f"{auth_service.PASSWORD_RESET_EXPIRE_MINUTES} minutos."
+)
 
 
 def _set_refresh_cookie(response: Response, refresh_token: str) -> None:
@@ -115,6 +129,42 @@ async def logout(response: Response):
     """Invalida la sesion del usuario eliminando la cookie de refresh token."""
     response.delete_cookie(key=settings.REFRESH_COOKIE_NAME, path="/auth")
     return success_response(data=None, message="Sesion cerrada exitosamente")
+
+
+@router.post("/forgot-password")
+@limiter.limit("3/minute")
+async def forgot_password(request: Request, payload: ForgotPasswordRequest, db: AsyncSession = Depends(get_db)):
+    """Inicia el flujo de recuperacion de contrasena. Responde SIEMPRE el mismo mensaje
+    generico, exista o no el email, para no permitir enumerar cuentas registradas (ver
+    auth_service.request_password_reset: el token real se registra en los logs del backend,
+    no hay servicio de email configurado en este proyecto)."""
+    await auth_service.request_password_reset(db, payload.email, payload.tenant_slug)
+    return success_response(data=None, message=FORGOT_PASSWORD_MESSAGE)
+
+
+@router.post("/reset-password")
+@limiter.limit("5/minute")
+async def reset_password_endpoint(
+    request: Request, payload: ResetPasswordRequest, db: AsyncSession = Depends(get_db)
+):
+    """Completa la recuperacion de contrasena con el token emitido por /auth/forgot-password."""
+    success = await auth_service.reset_password(db, payload.token, payload.new_password)
+    if not success:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Token invalido o expirado")
+    return success_response(data=None, message="Contrasena actualizada exitosamente")
+
+
+@router.patch("/me/password")
+async def change_my_password(
+    payload: ChangePasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Cambia la contrasena del usuario autenticado actual, validando la contrasena vigente."""
+    success = await auth_service.change_password(db, current_user, payload.current_password, payload.new_password)
+    if not success:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="La contrasena actual no es correcta")
+    return success_response(data=None, message="Contrasena actualizada exitosamente")
 
 
 @router.get("/me")

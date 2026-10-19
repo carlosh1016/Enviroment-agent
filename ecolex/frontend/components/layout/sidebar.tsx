@@ -12,6 +12,7 @@ const NAV_ITEMS = [
   { href: "/documents", label: "Documentos", icon: "folder_open" },
   { href: "/chat", label: "Chat Asistente", icon: "chat" },
   { href: "/users", label: "Usuarios & Equipo", icon: "group", adminOnly: true },
+  { href: "/settings", label: "Mi Cuenta", icon: "lock" },
 ];
 
 export function Sidebar() {

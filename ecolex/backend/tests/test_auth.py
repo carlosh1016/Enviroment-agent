@@ -1,4 +1,5 @@
 import uuid
+from unittest.mock import patch
 
 
 def _unique_slug(prefix: str = "tenant") -> str:
@@ -97,3 +98,80 @@ class TestAuth:
         client.cookies.clear()
         post_logout_refresh = await client.post("/auth/refresh")
         assert post_logout_refresh.status_code == 401
+
+    async def test_change_password_success_then_old_password_fails(self, client):
+        """Cambiar la contrasena con la actual correcta debe funcionar; la vieja deja de servir."""
+        _, slug = await _register(client, email="change-pw@example.com", password="OldPassword123!")
+        login_response = await _login(client, "change-pw@example.com", "OldPassword123!", slug)
+        headers = {"Authorization": f"Bearer {login_response.json()['data']['access_token']}"}
+
+        response = await client.patch(
+            "/auth/me/password",
+            json={"current_password": "OldPassword123!", "new_password": "NewPassword456!"},
+            headers=headers,
+        )
+        assert response.status_code == 200
+
+        old_login = await _login(client, "change-pw@example.com", "OldPassword123!", slug)
+        assert old_login.status_code == 401
+        new_login = await _login(client, "change-pw@example.com", "NewPassword456!", slug)
+        assert new_login.status_code == 200
+
+    async def test_change_password_wrong_current_returns_401(self, client):
+        """Cambiar la contrasena con la actual incorrecta debe retornar 401 y no modificarla."""
+        _, slug = await _register(client, email="change-pw-wrong@example.com", password="OldPassword123!")
+        login_response = await _login(client, "change-pw-wrong@example.com", "OldPassword123!", slug)
+        headers = {"Authorization": f"Bearer {login_response.json()['data']['access_token']}"}
+
+        response = await client.patch(
+            "/auth/me/password",
+            json={"current_password": "ContrasenaIncorrecta!", "new_password": "NewPassword456!"},
+            headers=headers,
+        )
+        assert response.status_code == 401
+
+        still_works = await _login(client, "change-pw-wrong@example.com", "OldPassword123!", slug)
+        assert still_works.status_code == 200
+
+    async def test_forgot_and_reset_password_flow(self, client):
+        """Ciclo completo: pedir reset, usar el token para cambiar la contrasena, la vieja deja
+        de servir y la nueva si. El token se mockea (secrets.token_urlsafe) porque el "envio de
+        email" real es solo un log, no hay forma de leerlo desde el test."""
+        _, slug = await _register(client, email="reset-user@example.com", password="OldPassword123!")
+
+        with patch("app.services.auth_service.secrets.token_urlsafe", return_value="fixed-test-token"):
+            forgot_response = await client.post(
+                "/auth/forgot-password", json={"email": "reset-user@example.com", "tenant_slug": slug}
+            )
+        assert forgot_response.status_code == 200
+
+        reset_response = await client.post(
+            "/auth/reset-password", json={"token": "fixed-test-token", "new_password": "NewPassword456!"}
+        )
+        assert reset_response.status_code == 200
+
+        old_login = await _login(client, "reset-user@example.com", "OldPassword123!", slug)
+        assert old_login.status_code == 401
+        new_login = await _login(client, "reset-user@example.com", "NewPassword456!", slug)
+        assert new_login.status_code == 200
+
+        # El token es de un solo uso: reutilizarlo debe fallar.
+        reuse_response = await client.post(
+            "/auth/reset-password", json={"token": "fixed-test-token", "new_password": "OtraClave789!"}
+        )
+        assert reuse_response.status_code == 400
+
+    async def test_forgot_password_unknown_email_returns_200_generic(self, client):
+        """No debe revelar si el email existe o no (previene enumeracion de usuarios): siempre 200."""
+        response = await client.post(
+            "/auth/forgot-password", json={"email": "no-existe-nunca@example.com", "tenant_slug": "cualquiera"}
+        )
+        assert response.status_code == 200
+        assert response.json()["success"] is True
+
+    async def test_reset_password_invalid_token_returns_400(self, client):
+        """Un token invalido o inexistente debe retornar 400, no 200 ni 500."""
+        response = await client.post(
+            "/auth/reset-password", json={"token": "token-que-nunca-existio", "new_password": "NewPassword456!"}
+        )
+        assert response.status_code == 400

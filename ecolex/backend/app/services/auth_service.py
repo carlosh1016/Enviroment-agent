@@ -1,3 +1,5 @@
+import hashlib
+import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -14,6 +16,9 @@ from app.models.user import User, UserRole
 logger = get_logger(__name__)
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12)
+
+PASSWORD_RESET_TOKEN_BYTES = 32
+PASSWORD_RESET_EXPIRE_MINUTES = 30
 
 
 class SlugAlreadyExistsError(Exception):
@@ -121,3 +126,81 @@ async def register_tenant_with_admin(
 
     logger.info("Nuevo tenant registrado exitosamente")
     return tenant, admin
+
+
+def _hash_reset_token(token: str) -> str:
+    """Hash deterministico (SHA-256, no bcrypt) del token de reset.
+
+    A diferencia de una contrasena, el token ya es aleatorio y de alta entropia
+    (secrets.token_urlsafe), asi que no necesita un hash lento/salteado -- y necesita ser
+    deterministico para poder buscarlo por igualdad en la base de datos (bcrypt genera un hash
+    distinto cada vez incluso para el mismo input, lo cual haria imposible este lookup).
+    """
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _is_expired(expires_at: datetime) -> bool:
+    """Compara expires_at contra la hora actual, tolerando que venga naive (SQLite en tests no
+    preserva tzinfo aunque la columna sea DateTime(timezone=True); siempre se escribe en UTC,
+    asi que tratar un valor naive como UTC es correcto)."""
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    return expires_at < datetime.now(timezone.utc)
+
+
+async def request_password_reset(db: AsyncSession, email: str, tenant_slug: str | None = None) -> None:
+    """Genera un token de reset de un solo uso (vigente PASSWORD_RESET_EXPIRE_MINUTES minutos) y
+    lo registra en el log del servidor en vez de enviarlo por correo real: este proyecto no
+    tiene un proveedor de email configurado. En un despliegue real, aqui iria la llamada a un
+    servicio de email (ej. Resend, SES) con el link de reset, en vez del logger.
+
+    SIEMPRE retorna sin error, exista o no el email/tenant_slug: revelar si una cuenta esta
+    registrada permitiria enumerar usuarios validos, por eso el router responde el mismo
+    mensaje generico sin importar lo que haga esta funcion.
+    """
+    query = select(User).join(Tenant, Tenant.id == User.tenant_id).where(User.email == email)
+    if tenant_slug:
+        query = query.where(Tenant.slug == tenant_slug)
+
+    result = await db.execute(query)
+    user = result.scalars().first()
+
+    if user is None or not user.is_active:
+        logger.info("Solicitud de reset de contrasena para un email no registrado o inactivo")
+        return
+
+    raw_token = secrets.token_urlsafe(PASSWORD_RESET_TOKEN_BYTES)
+    user.reset_token_hash = _hash_reset_token(raw_token)
+    user.reset_token_expires_at = datetime.now(timezone.utc) + timedelta(minutes=PASSWORD_RESET_EXPIRE_MINUTES)
+    await db.commit()
+
+    # TODO produccion: reemplazar este log por un envio real de email con un link que incluya
+    # este token (ej. https://app.ecolex.co/reset-password?token=<raw_token>).
+    logger.info("Token de reset de contrasena generado (simulando envio de email): %s", raw_token)
+
+
+async def reset_password(db: AsyncSession, token: str, new_password: str) -> bool:
+    """Valida un token de reset (existente y no vencido) y actualiza la contrasena. El token se
+    invalida de inmediato despues de usarse (de un solo uso). Retorna False si el token es
+    invalido, ya se uso o vencio."""
+    result = await db.execute(select(User).where(User.reset_token_hash == _hash_reset_token(token)))
+    user = result.scalar_one_or_none()
+
+    if user is None or user.reset_token_expires_at is None or _is_expired(user.reset_token_expires_at):
+        return False
+
+    user.hashed_password = hash_password(new_password)
+    user.reset_token_hash = None
+    user.reset_token_expires_at = None
+    await db.commit()
+    return True
+
+
+async def change_password(db: AsyncSession, user: User, current_password: str, new_password: str) -> bool:
+    """Cambia la contrasena de un usuario ya autenticado, validando primero la contrasena
+    actual. Retorna False si la contrasena actual no coincide."""
+    if not verify_password(current_password, user.hashed_password):
+        return False
+    user.hashed_password = hash_password(new_password)
+    await db.commit()
+    return True
