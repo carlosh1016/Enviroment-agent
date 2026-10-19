@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 from conftest import TestSessionLocal
 
 from app.models.conversation import Conversation, Message, MessageRole
+from app.models.tenant import Tenant
 
 
 def _unique_slug(prefix: str = "tenant") -> str:
@@ -40,6 +41,20 @@ async def _register_and_login(client, email: str | None = None, password: str = 
     me_response = await client.get("/auth/me", headers=headers)
     me_data = me_response.json()["data"]
     return headers, uuid.UUID(me_data["tenant_id"]), uuid.UUID(me_data["id"])
+
+
+async def _create_analyst_and_login(client, admin_headers: dict, tenant_slug: str, email: str) -> dict:
+    """El admin crea un analyst en su mismo tenant (via POST /api/v1/users/) y retorna los
+    headers de Authorization de ESE usuario, ya logueado."""
+    password = "TempPass123!"
+    await client.post(
+        "/api/v1/users/", json={"email": email, "password": password, "role": "analyst"}, headers=admin_headers
+    )
+    login_response = await client.post(
+        "/auth/login", json={"email": email, "password": password, "tenant_slug": tenant_slug}
+    )
+    token = login_response.json()["data"]["access_token"]
+    return {"Authorization": f"Bearer {token}"}
 
 
 async def _create_conversation_with_messages(
@@ -173,8 +188,10 @@ class TestReportEndpoint:
         assert response.json()["message"] == "Se necesitan al menos 2 mensajes para generar un informe"
         mock_summary.assert_not_called()
 
-    async def test_report_endpoint_wrong_tenant_returns_403(self, client):
-        """4. Generar un informe de una conversacion de otro tenant debe devolver 403."""
+    async def test_report_endpoint_wrong_tenant_returns_404(self, client):
+        """4. Generar un informe de una conversacion de otro tenant debe devolver 404 (no 403):
+        mismo criterio que _get_viewable_conversation_or_404 en conversations.py -- cruzar de
+        tenant no debe ni revelar que la conversacion existe."""
         _, tenant_a_id, user_a_id = await _register_and_login(client, email="report-owner@example.com")
         headers_b, _, _ = await _register_and_login(client, email="report-intruder@example.com")
 
@@ -192,7 +209,64 @@ class TestReportEndpoint:
                 f"/api/v1/reports/conversations/{conversation_id}", json={}, headers=headers_b
             )
 
+        assert response.status_code == 404
+
+    async def test_report_endpoint_same_tenant_non_owner_non_admin_returns_403(self, client):
+        """4b. Un analyst del MISMO tenant, que no es el dueno de la conversacion, debe recibir
+        403 -- antes de este fix, este endpoint solo validaba el tenant, asi que cualquier
+        usuario del tenant podia generar el informe de una conversacion ajena."""
+        admin_headers, tenant_id, admin_id = await _register_and_login(client, email="report-admin@example.com")
+        async with TestSessionLocal() as db:
+            tenant = await db.get(Tenant, tenant_id)
+            slug = tenant.slug
+        analyst_headers = await _create_analyst_and_login(
+            client, admin_headers, slug, email="report-analyst@example.com"
+        )
+
+        conversation_id = await _create_conversation_with_messages(
+            tenant_id,
+            admin_id,
+            [
+                (MessageRole.USER, "Pregunta 1", _dt(1), None),
+                (MessageRole.ASSISTANT, "Respuesta 1", _dt(1), None),
+            ],
+        )
+
+        with _patched_summary(), _patched_pdf():
+            response = await client.post(
+                f"/api/v1/reports/conversations/{conversation_id}", json={}, headers=analyst_headers
+            )
+
         assert response.status_code == 403
+
+    async def test_report_endpoint_admin_can_generate_for_other_users_conversation(self, client):
+        """4c. El admin SI puede generar el informe de la conversacion de un analyst de su
+        mismo tenant (rol de auditor, igual que ver los mensajes en el chat)."""
+        admin_headers, tenant_id, _ = await _register_and_login(client, email="report-admin2@example.com")
+        async with TestSessionLocal() as db:
+            tenant = await db.get(Tenant, tenant_id)
+            slug = tenant.slug
+        analyst_headers = await _create_analyst_and_login(
+            client, admin_headers, slug, email="report-analyst2@example.com"
+        )
+        analyst_me = await client.get("/auth/me", headers=analyst_headers)
+        analyst_id = uuid.UUID(analyst_me.json()["data"]["id"])
+
+        conversation_id = await _create_conversation_with_messages(
+            tenant_id,
+            analyst_id,
+            [
+                (MessageRole.USER, "Pregunta 1", _dt(1), None),
+                (MessageRole.ASSISTANT, "Respuesta 1", _dt(1), None),
+            ],
+        )
+
+        with _patched_summary(), _patched_pdf():
+            response = await client.post(
+                f"/api/v1/reports/conversations/{conversation_id}", json={}, headers=admin_headers
+            )
+
+        assert response.status_code == 200
 
     async def test_date_range_filters_messages(self, client):
         """5. Con date_from/date_to que solo cubren un par de mensajes, generate_compliance_summary

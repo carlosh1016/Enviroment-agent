@@ -8,9 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.deps import get_current_tenant, get_current_user
-from app.models.conversation import Conversation, Message
+from app.models.conversation import Message
 from app.models.tenant import Tenant
 from app.models.user import User
+from app.routers.conversations import _get_viewable_conversation_or_404
 from app.schemas.report import ReportRequest
 from app.services import report_service
 from app.services.rag_service import _get_document_filenames
@@ -62,12 +63,13 @@ async def generate_conversation_report(
 ):
     """Genera un informe PDF de cumplimiento normativo a partir del historial de una
     conversacion (o el rango de fechas indicado) y lo retorna para descarga directa.
+
+    Mismo criterio de acceso que ver los mensajes de la conversacion: el dueno, o un admin del
+    tenant (rol de auditor, ver _get_viewable_conversation_or_404) -- antes este endpoint solo
+    validaba el tenant, asi que cualquier usuario del tenant podia generar el informe de una
+    conversacion ajena que ni siquiera podia leer en el chat.
     """
-    conversation = await db.get(Conversation, conversation_id)
-    if conversation is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversacion no encontrada")
-    if conversation.tenant_id != tenant.id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No tiene acceso a esta conversacion")
+    conversation = await _get_viewable_conversation_or_404(db, conversation_id, tenant.id, current_user)
 
     result = await db.execute(
         select(Message).where(Message.conversation_id == conversation_id).order_by(Message.created_at.asc())

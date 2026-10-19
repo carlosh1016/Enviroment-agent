@@ -240,3 +240,30 @@ loopear sobre si misma. Se elimino `/settings` (pagina de cambio de contrasena v
 link en el sidebar) -- `/change-password` la reemplaza, alcanzable solo via el redirect forzado
 (o escribiendo la URL a mano). `app/users/page.tsx` muestra una badge "Debe cambiar contraseña"
 mientras el usuario creado no la haya cambiado.
+
+## COOKIE_SECURE en False para desarrollo local + alcance del reporte PDF (2026-10-20)
+
+**COOKIE_SECURE**: estaba en `True` en `.env` mientras todo corria por HTTP en local. Un
+navegador descarta cualquier cookie `Secure` que no venga de HTTPS, asi que el refresh token
+NUNCA se reenviaba -- no era solo el test conocido fallando, era un bug real: la sesion se
+caia silenciosamente al expirar el access token (30 min). Puesto en `False` en `.env` para este
+entorno; en produccion (HTTPS real) debe volver a `True`. IMPORTANTE: `docker compose restart`
+NO relee el `.env` (solo reinicia el proceso dentro del mismo contenedor) -- hace falta
+`docker compose up -d backend` para que recree el contenedor con el env_file actualizado.
+
+**Alcance del reporte PDF**: `POST /reports/conversations/{id}` solo validaba que la
+conversacion fuera del mismo tenant, sin revisar dueno -- cualquier usuario del tenant podia
+generar el informe de una conversacion ajena, inconsistente con el rol de auditor recien
+agregado a `/conversations/*`. Ahora usa el mismo `_get_viewable_conversation_or_404` (dueno o
+admin) que los mensajes del chat. Efecto colateral correcto: cruzar de tenant ahora da 404 (no
+revela que la conversacion existe), no 403 -- igual que en conversations.py.
+
+## Skill de seguridad instalada (2026-10-20)
+
+`security-audit` (Cloudflare, https://github.com/cloudflare/security-audit-skill) en
+`.claude/skills/security-audit/`. IMPORTANTE: instalarla con `npx` fallo (`npx` en este entorno
+WSL resuelve al Node.js de *Windows*, que no puede interpretar la ruta UNC de WSL y termina
+intentando escribir en `C:\Windows\.claude`, sin permisos). Se instalo con
+`pnpm dlx skills add <repo> --skill security-audit --agent claude-code -y`, usando el Node de
+Linux que ya trae pnpm. Si hace falta instalar otra skill o paquete npm de un solo uso en este
+entorno, usar `pnpm dlx` en vez de `npx`.
