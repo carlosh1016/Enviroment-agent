@@ -1,11 +1,24 @@
 "use client";
 
 import { useState } from "react";
+import { openDocumentFile } from "@/lib/documents";
+import { getErrorMessage } from "@/lib/errors";
 import type { MessageItem } from "@/lib/types";
+import { ErrorBanner } from "@/components/ui/error-banner";
 
 export function MessageBubble({ message }: { message: MessageItem }) {
   const [sourcesOpen, setSourcesOpen] = useState(false);
+  const [viewError, setViewError] = useState<string | null>(null);
   const isUser = message.role === "user";
+
+  async function handleViewSource(source: NonNullable<MessageItem["source_chunks"]>[number]) {
+    setViewError(null);
+    try {
+      await openDocumentFile(source.document_id, source.pagina_origen);
+    } catch (err) {
+      setViewError(getErrorMessage(err, "No se pudo abrir el documento original."));
+    }
+  }
 
   if (isUser) {
     return (
@@ -46,20 +59,26 @@ export function MessageBubble({ message }: { message: MessageItem }) {
               {sourcesOpen && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-space-sm mt-space-sm">
                   {sources.map((source, idx) => (
-                    <div
+                    <button
+                      type="button"
                       key={`${source.document_name}-${idx}`}
-                      className="bg-surface-container-low p-space-sm rounded-xl flex flex-col gap-0.5"
+                      onClick={() => handleViewSource(source)}
+                      title="Abrir el documento original"
+                      className="bg-surface-container-low hover:bg-surface-container p-space-sm rounded-xl flex flex-col gap-0.5 text-left transition-colors cursor-pointer"
                     >
-                      <span className="font-label-md text-label-md text-on-surface font-semibold truncate">
+                      <span className="flex items-center gap-1 font-label-md text-label-md text-on-surface font-semibold truncate">
+                        <span className="material-symbols-outlined text-[14px] flex-shrink-0">description</span>
                         {source.document_name}
                       </span>
                       <span className="font-body-sm text-body-sm text-outline">
-                        Fragmento #{source.chunk_index}
+                        {source.numero_articulo ? `Artículo ${source.numero_articulo}` : `Fragmento #${source.chunk_index}`}
+                        {source.pagina_origen ? ` · pág. ${source.pagina_origen}` : ""}
                       </span>
-                    </div>
+                    </button>
                   ))}
                 </div>
               )}
+              <ErrorBanner message={viewError} className="mt-space-sm" />
             </div>
           )}
         </div>

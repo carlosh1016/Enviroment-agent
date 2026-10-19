@@ -1,6 +1,9 @@
+import asyncio
 import uuid
+from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi.responses import FileResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,12 +16,36 @@ from app.models.user import User, UserRole
 from app.schemas import success_response
 from app.schemas.document import DocumentRead, PaginatedDocuments
 from app.services import ingestion_service
+from app.services.rag_service import _get_base_tenant_id
 
 router = APIRouter(prefix="/api/v1/documents", tags=["documents"])
 logger = get_logger(__name__)
 
 MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024
 ALLOWED_EXTENSIONS = {".pdf": DocumentFileType.PDF, ".docx": DocumentFileType.DOCX, ".txt": DocumentFileType.TXT}
+
+# Archivo original (bytes tal cual se subieron), guardado en disco solo para poder mostrarlo
+# despues en el visor ("Ver documento" en las fuentes del chat) -- NO es la fuente de verdad
+# del contenido, que sigue siendo document_chunks. Ruta relativa al cwd del proceso (/app en
+# Docker, ver Dockerfile WORKDIR), dentro del volumen montado: persiste entre reinicios del
+# contenedor. Documentos subidos ANTES de esta funcionalidad no tienen archivo aqui (ver
+# get_document_file): solo se guardan desde este cambio en adelante.
+STORAGE_DIR = Path("storage/documents")
+
+CONTENT_TYPES = {
+    DocumentFileType.PDF: "application/pdf",
+    DocumentFileType.DOCX: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    DocumentFileType.TXT: "text/plain",
+}
+
+
+def _extension_for(file_type: DocumentFileType) -> str:
+    """Extension de archivo (con punto) correspondiente a un DocumentFileType."""
+    return next(ext for ext, ft in ALLOWED_EXTENSIONS.items() if ft == file_type)
+
+
+def _storage_path(document_id: uuid.UUID, file_type: DocumentFileType) -> Path:
+    return STORAGE_DIR / f"{document_id}{_extension_for(file_type)}"
 
 
 def _require_upload_role(current_user: User) -> None:
@@ -30,6 +57,21 @@ def _require_upload_role(current_user: User) -> None:
 async def _get_tenant_document_or_404(db: AsyncSession, document_id: uuid.UUID, tenant_id: uuid.UUID) -> Document:
     """Obtiene un documento por id, validando que pertenezca al tenant actual. Lanza 404 en caso contrario."""
     result = await db.execute(select(Document).where(Document.id == document_id, Document.tenant_id == tenant_id))
+    document = result.scalar_one_or_none()
+    if document is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Documento no encontrado")
+    return document
+
+
+async def _get_viewable_document_or_404(db: AsyncSession, document_id: uuid.UUID, tenant_id: uuid.UUID) -> Document:
+    """Como _get_tenant_document_or_404, pero tambien permite el corpus base (_base) compartido:
+    las fuentes citadas en el chat pueden venir de documentos propios o del corpus normativo
+    comun, y en ambos casos el usuario debe poder abrir el original."""
+    base_tenant_id = await _get_base_tenant_id(db)
+    allowed_tenant_ids = [tid for tid in (tenant_id, base_tenant_id) if tid is not None]
+    result = await db.execute(
+        select(Document).where(Document.id == document_id, Document.tenant_id.in_(allowed_tenant_ids))
+    )
     document = result.scalar_one_or_none()
     if document is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Documento no encontrado")
@@ -78,6 +120,10 @@ async def upload_document(
     db.add(document)
     await db.commit()
     await db.refresh(document)
+
+    storage_path = _storage_path(document.id, document.file_type)
+    await asyncio.to_thread(storage_path.parent.mkdir, parents=True, exist_ok=True)
+    await asyncio.to_thread(storage_path.write_bytes, file_bytes)
 
     background_tasks.add_task(
         ingestion_service.process_document_background,
@@ -138,6 +184,35 @@ async def get_document(
     )
 
 
+@router.get("/{document_id}/file")
+async def get_document_file(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    """Sirve el archivo original (PDF/DOCX/TXT) para visualizarlo, ej. al hacer click en una
+    fuente citada en el chat. Permite tanto documentos propios del tenant como del corpus base
+    compartido (ver _get_viewable_document_or_404).
+
+    Excepcion intencional al envoltorio {success, message, data} de toda la API: el contenido
+    es binario (mismo criterio que /reports/conversations/{id}, ver reports.py).
+    """
+    document = await _get_viewable_document_or_404(db, document_id, tenant.id)
+    storage_path = _storage_path(document.id, document.file_type)
+
+    if not await asyncio.to_thread(storage_path.is_file):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="El archivo original no esta disponible (se subio antes de esta funcionalidad)",
+        )
+
+    return FileResponse(
+        storage_path,
+        media_type=CONTENT_TYPES[document.file_type],
+        headers={"Content-Disposition": f'inline; filename="{document.filename}"'},
+    )
+
+
 @router.delete("/{document_id}")
 async def delete_document(
     document_id: uuid.UUID,
@@ -152,7 +227,11 @@ async def delete_document(
         )
 
     document = await _get_tenant_document_or_404(db, document_id, tenant.id)
+    storage_path = _storage_path(document.id, document.file_type)
+
     await db.delete(document)
     await db.commit()
+
+    await asyncio.to_thread(storage_path.unlink, missing_ok=True)
 
     return success_response(data=None, message="Documento eliminado exitosamente")

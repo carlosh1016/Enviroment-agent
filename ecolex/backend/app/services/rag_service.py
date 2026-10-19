@@ -308,6 +308,7 @@ async def chat(
         sources = [
             {
                 "document_id": str(chunk["document_id"]),
+                "document_name": filenames.get(chunk["document_id"], "desconocido"),
                 "chunk_index": chunk["chunk_index"],
                 "score": chunk["score"],
                 "numero_articulo": chunk["numero_articulo"],

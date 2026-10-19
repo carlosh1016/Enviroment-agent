@@ -54,6 +54,7 @@ class SourceChunkRead(BaseModel):
     """
 
     document_id: uuid.UUID
+    document_name: str
     chunk_index: int
     score: float
     numero_articulo: str | None = None

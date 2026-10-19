@@ -50,8 +50,12 @@ export interface ConversationItem {
 export type MessageRole = "user" | "assistant";
 
 export interface SourceChunk {
+  document_id: string;
   document_name: string;
   chunk_index: number;
+  score: number;
+  numero_articulo?: string | null;
+  pagina_origen?: number | null;
 }
 
 export interface MessageItem {
