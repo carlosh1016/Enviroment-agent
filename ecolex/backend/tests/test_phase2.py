@@ -1,9 +1,12 @@
 import io
 import uuid
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from unittest.mock import AsyncMock, patch
 
 from conftest import TestSessionLocal
 from docx import Document as DocxDocument
+from openpyxl import Workbook
 from sqlalchemy import select
 
 from app.models.document import DocumentChunk
@@ -112,6 +115,48 @@ VALID_TXT_BYTES = (
 )
 
 
+def _make_mhtml_bytes(html: str) -> bytes:
+    """Construye un .mhtml minimo (HTML empaquetado en MIME multipart/related, igual que
+    'Guardar como...' del navegador)."""
+    message = MIMEMultipart("related")
+    message.attach(MIMEText(html, "html", "utf-8"))
+    return message.as_bytes()
+
+
+def _make_xlsx_bytes(rows: list[list[str]]) -> bytes:
+    workbook = Workbook()
+    sheet = workbook.active
+    for row in rows:
+        sheet.append(row)
+    buf = io.BytesIO()
+    workbook.save(buf)
+    return buf.getvalue()
+
+
+VALID_MHTML_BYTES = _make_mhtml_bytes(
+    "<html><body><h1>Resolucion de prueba</h1>"
+    "<p>Pagina guardada sobre normativa ambiental colombiana y su aplicacion practica.</p>"
+    "</body></html>"
+)
+VALID_HTML_BYTES = (
+    "<html><body><h1>Resolucion de prueba</h1>"
+    "<p>Documento HTML de prueba sobre normativa ambiental colombiana y su aplicacion practica.</p>"
+    "</body></html>"
+).encode("utf-8")
+VALID_XLSX_BYTES = _make_xlsx_bytes(
+    [
+        ["articulo", "descripcion"],
+        ["1", "Normativa ambiental colombiana de prueba con suficientes caracteres para pasar el minimo"],
+        ["2", "Segunda fila de prueba sobre normativa ambiental colombiana y su aplicacion practica"],
+    ]
+)
+VALID_CSV_BYTES = (
+    "articulo,descripcion\n"
+    "1,Normativa ambiental colombiana de prueba con suficientes caracteres para pasar el minimo\n"
+    "2,Segunda fila de prueba sobre normativa ambiental colombiana y su aplicacion practica\n"
+).encode("utf-8")
+
+
 def _patched_ingestion_embeddings(dim: int = 768, value: float = 0.1):
     """Mockea openrouter_client.create_embeddings con vectores deterministicos, sin llamadas reales."""
 
@@ -143,12 +188,12 @@ class TestDocumentUpload:
         assert body["data"]["filename"] == "normativa.pdf"
 
     async def test_upload_invalid_extension_returns_422(self, client):
-        """2. Upload con extension invalida (.xlsx) debe retornar 422."""
+        """2. Upload con extension invalida (.exe) debe retornar 422."""
         headers, _ = await _register_and_login(client)
 
         response = await client.post(
             "/api/v1/documents/upload",
-            files={"file": ("hoja.xlsx", b"contenido cualquiera", "application/vnd.ms-excel")},
+            files={"file": ("instalador.exe", b"contenido cualquiera", "application/octet-stream")},
             data={"es_base_corpus": "false"},
             headers=headers,
         )
@@ -268,6 +313,62 @@ class TestIngestionService:
         text = parse_document(VALID_DOCX_BYTES, "docx")
         assert len(text.strip()) > 0
         assert "normativa" in text.lower()
+
+    def test_parse_document_mhtml_extracts_text_without_html_tags(self):
+        """8b. parse_document con MHTML debe extraer el texto de la parte text/html, sin tags."""
+        from app.services.ingestion_service import parse_document
+
+        text = parse_document(VALID_MHTML_BYTES, "mhtml")
+        assert "normativa ambiental colombiana" in text.lower()
+        assert "<p>" not in text and "<html>" not in text
+
+    def test_parse_document_html_extracts_text_without_html_tags(self):
+        """8c. parse_document con HTML plano debe extraer el texto, sin tags."""
+        from app.services.ingestion_service import parse_document
+
+        text = parse_document(VALID_HTML_BYTES, "html")
+        assert "normativa ambiental colombiana" in text.lower()
+        assert "<h1>" not in text
+
+    def test_parse_document_xlsx_includes_sheet_name_and_cells(self):
+        """8d. parse_document con XLSX debe incluir el nombre de la hoja y el contenido de las celdas."""
+        from app.services.ingestion_service import parse_document
+
+        text = parse_document(VALID_XLSX_BYTES, "xlsx")
+        assert "Hoja:" in text
+        assert "normativa ambiental colombiana" in text.lower()
+
+    def test_parse_document_csv_joins_cells_with_pipe(self):
+        """8e. parse_document con CSV debe unir las celdas de cada fila."""
+        from app.services.ingestion_service import parse_document
+
+        text = parse_document(VALID_CSV_BYTES, "csv")
+        assert "articulo | descripcion" in text
+        assert "normativa ambiental colombiana" in text.lower()
+
+    async def test_upload_valid_xlsx_is_processed_end_to_end(self, client):
+        """8f. Upload de XLSX valido debe terminar en status='ready' con chunks generados
+        (pipeline completo, no solo el parser unitario)."""
+        headers, _ = await _register_and_login(client, email="upload-xlsx@example.com")
+
+        with _patched_ingestion_embeddings():
+            upload_response = await client.post(
+                "/api/v1/documents/upload",
+                files={
+                    "file": (
+                        "hoja.xlsx",
+                        VALID_XLSX_BYTES,
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+                },
+                data={"es_base_corpus": "false"},
+                headers=headers,
+            )
+        document_id = upload_response.json()["data"]["id"]
+
+        detail_response = await client.get(f"/api/v1/documents/{document_id}", headers=headers)
+        assert detail_response.json()["data"]["status"] == "ready"
+        assert detail_response.json()["data"]["chunk_count"] > 0
 
     def test_chunk_semantic_splits_by_articulo_with_metadata(self):
         """9. chunk_semantic con texto de al menos 2 ARTICULOs debe generar al menos 2 chunks,

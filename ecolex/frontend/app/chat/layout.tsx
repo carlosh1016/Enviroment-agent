@@ -9,7 +9,7 @@ export default function ChatLayout({ children }: { children: React.ReactNode }) 
 
   return (
     <AppShell>
-      <div className="grid grid-cols-1 xl:grid-cols-12 gap-space-lg w-full min-h-[calc(100vh-6.5rem)]">
+      <div className="grid grid-cols-1 xl:grid-cols-12 gap-space-lg w-full min-h-[calc(100vh-6.5rem)] xl:h-[calc(100vh-6.5rem)] xl:overflow-hidden">
         <ConversationList
           conversations={conversations}
           loading={loading}
@@ -17,7 +17,7 @@ export default function ChatLayout({ children }: { children: React.ReactNode }) 
           error={error}
           onCreate={createConversation}
         />
-        <section className="xl:col-span-8 2xl:col-span-9 flex flex-col bg-surface-container-lowest rounded-xl shadow-sm overflow-hidden">
+        <section className="xl:col-span-8 2xl:col-span-9 xl:h-full flex flex-col bg-surface-container-lowest rounded-xl shadow-sm overflow-hidden">
           {children}
         </section>
       </div>

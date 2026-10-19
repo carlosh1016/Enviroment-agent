@@ -15,8 +15,11 @@ es normativa ambiental general (aire, agua, ruido, licenciamiento, vertimientos)
   Google ni LangChain). Modelos: `qwen/qwen3-embedding-8b` (embeddings, recortados a 768 dim
   con `dimensions` para no romper el esquema `Vector(768)`) y `google/gemini-3.5-flash-lite`
   (chat, limpieza de texto de PDFs y transcripcion de paginas escaneadas).
-- Parseo de documentos: pdfplumber + clasificador texto/escaneado (PDF), python-docx, texto
-  plano. Chunking semantico por articulo (`chunk_semantic`, ver ingestion_service.py).
+- Parseo de documentos: pdfplumber + clasificador texto/escaneado (PDF), python-docx (DOCX),
+  texto plano (TXT/CSV), BeautifulSoup (MHTML/HTML, con deteccion automatica de charset via
+  UnicodeDammit -- paginas reales de gobierno suelen declarar el charset solo en un <meta>
+  dentro del HTML, no en la cabecera MIME), openpyxl (XLSX). Chunking semantico por articulo
+  (`chunk_semantic`, ver ingestion_service.py).
 - Reportes PDF de cumplimiento (Fase 3): WeasyPrint (`app/services/report_service.py`).
 - Frontend: Next.js 14 (App Router) + TypeScript + TailwindCSS, componentes estilo
   shadcn/ui (Radix), axios, zustand (sesion). Gestor de paquetes: pnpm.
@@ -145,3 +148,20 @@ serie los reintentos por fallos de red transitorios se acumulaban — se vio un 
 y combina los resultados quedandose con el score mas alto por chunk, hasta `MAX_RELEVANT_CHUNKS`
 (10). Si `_expand_query` falla, se degrada a buscar solo con la pregunta original. La ruta
 SQLite de los tests (sin pgvector real) no usa expansion: no hay similitud real que aprovechar.
+
+## Tipos de documento soportados en la ingesta (2026-10-19)
+
+Ademas de PDF/DOCX/TXT: **MHTML/HTML** (paginas guardadas por el navegador, ej. resoluciones
+publicadas en sitios de gobierno) y **XLSX/CSV** (hojas de calculo). `DocumentFileType`
+(migracion 0004, `ALTER TYPE document_file_type ADD VALUE`) y `ALLOWED_EXTENSIONS` en
+`routers/documents.py` listan las extensiones. `parse_document` en `ingestion_service.py`
+dispacha a `_parse_mhtml`/`_html_to_text`/`_parse_xlsx`/`_parse_csv`; ninguno de estos pasa por
+OpenRouter (a diferencia del PDF): su texto ya sale razonablemente limpio de la libreria que lo
+extrae. IMPORTANTE: para MHTML, usar `part.get_payload(decode=True)` (bytes crudos) + pasarlos
+directo a BeautifulSoup, NUNCA decodificar con `.decode("utf-8")` antes -- la cabecera MIME casi
+nunca declara el charset real en archivos reales, y decodificar a ciegas rompe los acentos
+(verificado con 3 .mhtml reales de la Secretaria Juridica Distrital de Bogota).
+
+Tambien se corrigio un bug preexistente: el mensaje de error y la validacion del frontend decian
+"10MB" pero `MAX_FILE_SIZE_BYTES` real es 50MB (el frontend bloqueaba de mas, antes de llegar al
+backend).

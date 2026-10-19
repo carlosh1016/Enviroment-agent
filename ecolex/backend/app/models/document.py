@@ -44,6 +44,10 @@ class DocumentFileType(str, enum.Enum):
     PDF = "pdf"
     DOCX = "docx"
     TXT = "txt"
+    MHTML = "mhtml"
+    HTML = "html"
+    XLSX = "xlsx"
+    CSV = "csv"
 
 
 class DocumentStatus(str, enum.Enum):

@@ -51,10 +51,10 @@ export function UploadDropzone({ onFiles, disabled }: UploadDropzoneProps) {
           <span className="material-symbols-outlined text-[30px]">cloud_upload</span>
         </div>
         <h3 className="font-headline-sm text-headline-sm text-primary mb-1">
-          Arrastre aquí archivos PDF, DOCX o TXT
+          Arrastre aquí archivos PDF, DOCX, TXT, MHTML, HTML, XLSX o CSV
         </h3>
         <p className="font-body-md text-body-md text-on-surface-variant max-w-xl mb-space-md">
-          Tamaño máximo 10MB por archivo. Se procesarán en segundo plano y aparecerán como
+          Tamaño máximo 50MB por archivo. Se procesarán en segundo plano y aparecerán como
           &quot;Procesando&quot; en la tabla hasta quedar listos.
         </p>
         <label className="cursor-pointer inline-flex items-center gap-space-xs px-space-md py-space-sm bg-secondary text-on-secondary rounded-xl font-label-lg text-label-lg shadow-sm hover:bg-on-secondary-container transition-all">
@@ -64,7 +64,7 @@ export function UploadDropzone({ onFiles, disabled }: UploadDropzoneProps) {
             ref={inputRef}
             type="file"
             multiple
-            accept=".pdf,.docx,.txt"
+            accept=".pdf,.docx,.txt,.mhtml,.mht,.html,.htm,.xlsx,.csv"
             className="hidden"
             disabled={disabled}
             onChange={(e) => {

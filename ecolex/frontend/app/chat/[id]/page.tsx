@@ -108,7 +108,7 @@ export default function ConversationPage() {
         </button>
       </header>
 
-      <div className="flex-1 overflow-y-auto p-space-lg flex flex-col gap-space-lg bg-surface">
+      <div className="flex-1 min-h-0 overflow-y-auto p-space-lg flex flex-col gap-space-lg bg-surface">
         <ErrorBanner message={deleteError} />
         <ErrorBanner message={loadError} />
         {loading && <p className="font-body-sm text-body-sm text-on-surface-variant">Cargando...</p>}

@@ -22,7 +22,17 @@ router = APIRouter(prefix="/api/v1/documents", tags=["documents"])
 logger = get_logger(__name__)
 
 MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024
-ALLOWED_EXTENSIONS = {".pdf": DocumentFileType.PDF, ".docx": DocumentFileType.DOCX, ".txt": DocumentFileType.TXT}
+ALLOWED_EXTENSIONS = {
+    ".pdf": DocumentFileType.PDF,
+    ".docx": DocumentFileType.DOCX,
+    ".txt": DocumentFileType.TXT,
+    ".mhtml": DocumentFileType.MHTML,
+    ".mht": DocumentFileType.MHTML,
+    ".html": DocumentFileType.HTML,
+    ".htm": DocumentFileType.HTML,
+    ".xlsx": DocumentFileType.XLSX,
+    ".csv": DocumentFileType.CSV,
+}
 
 # Archivo original (bytes tal cual se subieron), guardado en disco solo para poder mostrarlo
 # despues en el visor ("Ver documento" en las fuentes del chat) -- NO es la fuente de verdad
@@ -36,6 +46,13 @@ CONTENT_TYPES = {
     DocumentFileType.PDF: "application/pdf",
     DocumentFileType.DOCX: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     DocumentFileType.TXT: "text/plain",
+    # MHTML/XLSX no se renderizan "inline" en una pestaña como el PDF (el navegador los
+    # descarga en vez de mostrarlos) -- el Content-Type sigue siendo el correcto para que,
+    # al descargarlos, el sistema operativo los abra con la aplicacion correcta.
+    DocumentFileType.MHTML: "multipart/related",
+    DocumentFileType.HTML: "text/html",
+    DocumentFileType.XLSX: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    DocumentFileType.CSV: "text/csv",
 }
 
 
@@ -105,7 +122,7 @@ async def upload_document(
     if len(file_bytes) > MAX_FILE_SIZE_BYTES:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="El archivo supera el tamano maximo permitido de 10MB",
+            detail="El archivo supera el tamano maximo permitido de 50MB",
         )
 
     document = Document(

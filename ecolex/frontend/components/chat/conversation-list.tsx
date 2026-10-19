@@ -18,7 +18,7 @@ export function ConversationList({ conversations, loading, creating, error, onCr
   const pathname = usePathname();
 
   return (
-    <aside className="xl:col-span-4 2xl:col-span-3 flex flex-col gap-space-md bg-surface-container-low rounded-xl p-space-md shadow-sm">
+    <aside className="xl:col-span-4 2xl:col-span-3 xl:h-full flex flex-col gap-space-md bg-surface-container-low rounded-xl p-space-md shadow-sm overflow-hidden">
       <button
         type="button"
         onClick={onCreate}
@@ -31,7 +31,7 @@ export function ConversationList({ conversations, loading, creating, error, onCr
 
       <ErrorBanner message={error} />
 
-      <div className="flex flex-col gap-space-xs overflow-y-auto max-h-[calc(100vh-14rem)] pr-space-xs">
+      <div className="flex flex-col gap-space-xs overflow-y-auto max-h-[calc(100vh-14rem)] xl:max-h-none xl:flex-1 xl:min-h-0 pr-space-xs">
         {loading && (
           <p className="font-body-sm text-body-sm text-on-surface-variant px-space-xs">Cargando...</p>
         )}

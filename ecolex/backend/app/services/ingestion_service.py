@@ -1,11 +1,16 @@
 import asyncio
 import base64
+import csv
 import io
 import re
 import uuid
+from email import message_from_bytes
+from email.policy import default as email_default_policy
 
 import pdfplumber
+from bs4 import BeautifulSoup
 from docx import Document as DocxDocument
+from openpyxl import load_workbook
 from pdf2image import convert_from_bytes
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -63,15 +68,26 @@ CHUNK_MAX_CHARS = 1500
 
 
 def parse_document(file_bytes: bytes, file_type: str) -> str:
-    """Extrae el texto plano de un archivo DOCX o TXT. Lanza ValueError si queda vacio o ilegible.
+    """Extrae el texto plano de un archivo DOCX, TXT, MHTML, HTML, XLSX o CSV. Lanza ValueError
+    si queda vacio o ilegible.
 
     Los PDF NO pasan por aqui: usan el pipeline async de clasificacion + OpenRouter
-    (ver extract_pdf_pages), porque requieren I/O de red para limpiar/transcribir el texto.
+    (ver extract_pdf_pages), porque requieren I/O de red para limpiar/transcribir el texto. El
+    resto de formatos no lo necesitan: su texto ya sale razonablemente limpio de la libreria
+    que los parsea, sin el ruido de artefactos de extraccion propio de un PDF.
     """
     if file_type == "docx":
         text = _parse_docx(file_bytes)
     elif file_type == "txt":
         text = file_bytes.decode("utf-8", errors="replace")
+    elif file_type == "mhtml":
+        text = _parse_mhtml(file_bytes)
+    elif file_type == "html":
+        text = _html_to_text(file_bytes)
+    elif file_type == "xlsx":
+        text = _parse_xlsx(file_bytes)
+    elif file_type == "csv":
+        text = _parse_csv(file_bytes)
     else:
         raise ValueError(f"Tipo de archivo no soportado en parse_document: {file_type}")
 
@@ -93,6 +109,66 @@ def _parse_docx(file_bytes: bytes) -> str:
                     parts.append(cell.text)
 
     return "\n\n".join(parts)
+
+
+def _html_to_text(html: str | bytes) -> str:
+    """Convierte HTML a texto plano: descarta <script>/<style> (no son contenido legible) y
+    colapsa lineas en blanco repetidas que deja get_text().
+
+    Recibe BYTES crudos (no un str ya decodificado) siempre que se pueda: paginas reales
+    guardadas por el navegador frecuentemente NO declaran el charset en la cabecera MIME (viene
+    solo en un <meta http-equiv="Content-Type" content="...charset=windows-1252"> dentro del
+    propio HTML, visto en .mhtml reales de sitios de gobierno colombianos) -- decodificar a
+    ciegas como UTF-8 antes de llegar aqui rompe los acentos. BeautifulSoup (via UnicodeDammit)
+    sabe detectar el charset declarado adentro del documento cuando se le pasan bytes.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style"]):
+        tag.decompose()
+    lines = [line.strip() for line in soup.get_text(separator="\n").splitlines()]
+    return "\n".join(line for line in lines if line)
+
+
+def _parse_mhtml(file_bytes: bytes) -> str:
+    """Extrae el texto de un .mhtml (pagina web guardada por el navegador: HTML + sus recursos
+    -- imagenes, CSS -- empaquetados en un unico archivo MIME multipart, ej. 'Guardar como...'
+    de Chrome sobre una resolucion publicada en un sitio de gobierno). Busca la primera parte
+    text/html del paquete y descarta el resto (imagenes, CSS, etc.).
+
+    Usa get_payload(decode=True) (bytes crudos, solo revierte el Content-Transfer-Encoding --
+    quoted-printable o base64 -- de la parte) en vez de get_content() (que decodificaria el
+    charset usando la cabecera MIME, la cual en la practica suele venir vacia u omitida; ver
+    _html_to_text)."""
+    message = message_from_bytes(file_bytes, policy=email_default_policy)
+    for part in message.walk():
+        if part.get_content_type() == "text/html":
+            return _html_to_text(part.get_payload(decode=True))
+    raise ValueError("El archivo .mhtml no contiene una parte text/html")
+
+
+def _parse_xlsx(file_bytes: bytes) -> str:
+    """Extrae todas las hojas de un XLSX como texto: una seccion 'Hoja: <nombre>' por hoja,
+    cada fila no vacia con sus celdas unidas por ' | '. `data_only=True` lee el ultimo valor
+    calculado de las formulas (no la formula en si)."""
+    workbook = load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
+    sections = []
+    for sheet in workbook.worksheets:
+        rows_text = [
+            " | ".join(str(cell) for cell in row if cell is not None)
+            for row in sheet.iter_rows(values_only=True)
+            if any(cell is not None for cell in row)
+        ]
+        if rows_text:
+            sections.append(f"Hoja: {sheet.title}\n" + "\n".join(rows_text))
+    return "\n\n".join(sections)
+
+
+def _parse_csv(file_bytes: bytes) -> str:
+    """Extrae un CSV como texto, una linea por fila con las celdas unidas por ' | '.
+    utf-8-sig tolera el BOM que agregan Excel/Sheets al exportar CSV en español."""
+    decoded = file_bytes.decode("utf-8-sig", errors="replace")
+    rows_text = [" | ".join(cell for cell in row if cell) for row in csv.reader(io.StringIO(decoded)) if any(row)]
+    return "\n".join(rows_text)
 
 
 def _extract_raw_pdf_pages(file_bytes: bytes) -> list[str]:
