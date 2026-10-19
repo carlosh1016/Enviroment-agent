@@ -92,6 +92,9 @@ async def create_user(
         hashed_password=hash_password(payload.password),
         role=payload.role,
         is_active=True,
+        # La contrasena la eligio el admin, no el usuario: se le exige definir una propia en
+        # su primer login (ver AppShell en el frontend y auth_service.change_password).
+        must_change_password=True,
     )
     db.add(user)
     await db.commit()

@@ -3,13 +3,14 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { api } from "@/lib/api";
+import { useAuthStore } from "@/lib/store";
 import { getBlobErrorMessage, getErrorMessage, MSG_CHAT_FAILED } from "@/lib/errors";
 import { notifyConversationsChanged } from "@/lib/hooks/use-conversations";
 import { downloadConversationReport } from "@/lib/reports";
 import { MessageBubble } from "@/components/chat/message-bubble";
 import { ChatInput } from "@/components/chat/chat-input";
 import { ErrorBanner } from "@/components/ui/error-banner";
-import type { ApiEnvelope, MessageItem } from "@/lib/types";
+import type { ApiEnvelope, ConversationItem, MessageItem } from "@/lib/types";
 
 const MIN_MESSAGES_FOR_REPORT = 2;
 
@@ -19,7 +20,9 @@ export default function ConversationPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const conversationId = params.id;
+  const currentUser = useAuthStore((state) => state.user);
 
+  const [conversation, setConversation] = useState<ConversationItem | null>(null);
   const [messages, setMessages] = useState<MessageItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
@@ -30,13 +33,22 @@ export default function ConversationPage() {
   const [reportError, setReportError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
+  // Hasta que cargue la conversacion, se asume dueno (evita parpadear a modo solo-lectura).
+  // Un admin viendo la conversacion de otro usuario (rol de auditor, ver backend) cae en false.
+  const isOwner = !conversation || !currentUser || conversation.user_id === currentUser.id;
+
   useEffect(() => {
     setLoading(true);
     setLoadError(null);
     setChatError(null);
-    api
-      .get<ApiEnvelope<MessageItem[]>>(`/api/v1/conversations/${conversationId}/messages`)
-      .then((res) => setMessages(res.data.data))
+    Promise.all([
+      api.get<ApiEnvelope<ConversationItem>>(`/api/v1/conversations/${conversationId}`),
+      api.get<ApiEnvelope<MessageItem[]>>(`/api/v1/conversations/${conversationId}/messages`),
+    ])
+      .then(([convRes, messagesRes]) => {
+        setConversation(convRes.data.data);
+        setMessages(messagesRes.data.data);
+      })
       .catch((err) => setLoadError(getErrorMessage(err, "No se pudo cargar la conversación.")))
       .finally(() => setLoading(false));
   }, [conversationId]);
@@ -131,16 +143,28 @@ export default function ConversationPage() {
               {reportLoading ? "progress_activity" : "picture_as_pdf"}
             </span>
           </button>
-          <button
-            type="button"
-            onClick={handleDeleteConversation}
-            className="p-space-xs text-on-surface-variant hover:text-error hover:bg-surface-container-low rounded-xl transition-colors"
-            title="Eliminar conversación"
-          >
-            <span className="material-symbols-outlined text-[20px]">delete_sweep</span>
-          </button>
+          {isOwner && (
+            <button
+              type="button"
+              onClick={handleDeleteConversation}
+              className="p-space-xs text-on-surface-variant hover:text-error hover:bg-surface-container-low rounded-xl transition-colors"
+              title="Eliminar conversación"
+            >
+              <span className="material-symbols-outlined text-[20px]">delete_sweep</span>
+            </button>
+          )}
         </div>
       </header>
+
+      {!isOwner && conversation?.user_email && (
+        <div className="px-space-md py-2 bg-surface-container-low border-b border-surface-variant flex items-center gap-space-xs">
+          <span className="material-symbols-outlined text-secondary text-[16px]">visibility</span>
+          <p className="font-label-sm text-label-sm text-on-surface-variant">
+            Viendo la conversación de <span className="font-semibold">{conversation.user_email}</span> en modo
+            solo lectura.
+          </p>
+        </div>
+      )}
 
       <div className="flex-1 min-h-0 overflow-y-auto p-space-lg flex flex-col gap-space-lg bg-surface">
         <ErrorBanner message={reportError} />
@@ -165,7 +189,15 @@ export default function ConversationPage() {
         <div ref={bottomRef} />
       </div>
 
-      <ChatInput onSend={handleSend} disabled={sending || !!loadError} />
+      {isOwner ? (
+        <ChatInput onSend={handleSend} disabled={sending || !!loadError} />
+      ) : (
+        <div className="p-space-md border-t border-surface-variant text-center">
+          <p className="font-body-sm text-body-sm text-on-surface-variant">
+            No puedes enviar mensajes en una conversación de otro usuario.
+          </p>
+        </div>
+      )}
     </>
   );
 }

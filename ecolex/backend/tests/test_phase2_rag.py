@@ -19,6 +19,13 @@ def _unique_slug(prefix: str = "tenant") -> str:
 
 async def _register_and_login(client, email: str | None = None, password: str = "SecurePass123!"):
     """Registra un tenant + admin nuevo, inicia sesion y retorna los headers de Authorization."""
+    headers, _ = await _register_and_login_with_slug(client, email, password)
+    return headers
+
+
+async def _register_and_login_with_slug(client, email: str | None = None, password: str = "SecurePass123!"):
+    """Como _register_and_login, pero tambien retorna el slug del tenant (necesario para crear
+    un segundo usuario DENTRO del mismo tenant via POST /api/v1/users/)."""
     email = email or f"user-{uuid.uuid4().hex[:8]}@example.com"
     slug = _unique_slug()
     await client.post(
@@ -29,6 +36,21 @@ async def _register_and_login(client, email: str | None = None, password: str = 
             "admin_email": email,
             "admin_password": password,
         },
+    )
+    login_response = await client.post(
+        "/auth/login", json={"email": email, "password": password, "tenant_slug": slug}
+    )
+    token = login_response.json()["data"]["access_token"]
+    return {"Authorization": f"Bearer {token}"}, slug
+
+
+async def _create_user_and_login(
+    client, admin_headers: dict, slug: str, email: str, password: str = "TempPass123!", role: str = "analyst"
+) -> dict:
+    """Admin crea un usuario (via POST /api/v1/users/, el camino real que marca
+    must_change_password) y retorna los headers de Authorization de ESE usuario, ya logueado."""
+    await client.post(
+        "/api/v1/users/", json={"email": email, "password": password, "role": role}, headers=admin_headers
     )
     login_response = await client.post(
         "/auth/login", json={"email": email, "password": password, "tenant_slug": slug}
@@ -228,3 +250,76 @@ class TestConversationHistory:
         timestamps = [m["created_at"] for m in messages]
         assert timestamps == sorted(timestamps)
         assert [m["role"] for m in messages] == ["user", "assistant", "user", "assistant"]
+
+
+class TestAdminAuditorView:
+    """El admin puede VER (no escribir) las conversaciones de cualquier usuario de su tenant;
+    un analyst/viewer solo ve las propias (ver _get_viewable_conversation_or_404)."""
+
+    async def test_admin_lists_all_tenant_conversations(self, client):
+        """12. GET /conversations/ del admin debe incluir conversaciones de otros usuarios,
+        con user_email poblado; la del analyst no debe incluir las del admin."""
+        admin_headers, slug = await _register_and_login_with_slug(client, email="auditor-admin@example.com")
+        analyst_headers = await _create_user_and_login(
+            client, admin_headers, slug, email="auditor-analyst@example.com"
+        )
+
+        admin_conv = await client.post("/api/v1/conversations/", json={}, headers=admin_headers)
+        analyst_conv = await client.post("/api/v1/conversations/", json={}, headers=analyst_headers)
+
+        admin_list = await client.get("/api/v1/conversations/", headers=admin_headers)
+        admin_ids = {c["id"] for c in admin_list.json()["data"]["items"]}
+        assert admin_conv.json()["data"]["id"] in admin_ids
+        assert analyst_conv.json()["data"]["id"] in admin_ids
+        analyst_entry = next(c for c in admin_list.json()["data"]["items"] if c["id"] == analyst_conv.json()["data"]["id"])
+        assert analyst_entry["user_email"] == "auditor-analyst@example.com"
+
+        analyst_list = await client.get("/api/v1/conversations/", headers=analyst_headers)
+        analyst_ids = {c["id"] for c in analyst_list.json()["data"]["items"]}
+        assert analyst_ids == {analyst_conv.json()["data"]["id"]}
+
+    async def test_admin_can_view_analyst_messages(self, client):
+        """13. El admin puede leer GET /conversations/{id}/messages de una conversacion de un
+        analyst de su mismo tenant (200), sin ser el dueno."""
+        admin_headers, slug = await _register_and_login_with_slug(client, email="auditor-admin2@example.com")
+        analyst_headers = await _create_user_and_login(
+            client, admin_headers, slug, email="auditor-analyst2@example.com"
+        )
+        conv_response = await client.post("/api/v1/conversations/", json={}, headers=analyst_headers)
+        conversation_id = conv_response.json()["data"]["id"]
+
+        response = await client.get(f"/api/v1/conversations/{conversation_id}/messages", headers=admin_headers)
+        assert response.status_code == 200
+
+    async def test_admin_cannot_send_message_in_analyst_conversation(self, client):
+        """14. El rol de auditor es de SOLO LECTURA: el admin no puede enviar mensajes en una
+        conversacion que no es suya, aunque sea del mismo tenant."""
+        admin_headers, slug = await _register_and_login_with_slug(client, email="auditor-admin3@example.com")
+        analyst_headers = await _create_user_and_login(
+            client, admin_headers, slug, email="auditor-analyst3@example.com"
+        )
+        conv_response = await client.post("/api/v1/conversations/", json={}, headers=analyst_headers)
+        conversation_id = conv_response.json()["data"]["id"]
+
+        response = await client.post(
+            f"/api/v1/conversations/{conversation_id}/messages",
+            json={"content": "Intento de un admin de escribir en conversacion ajena"},
+            headers=admin_headers,
+        )
+        assert response.status_code == 403
+
+    async def test_analyst_cannot_view_another_analysts_conversation(self, client):
+        """15. Un analyst/viewer (no-admin) sigue sin poder ver conversaciones de OTRO usuario
+        del mismo tenant -- el rol de auditor es exclusivo del admin."""
+        admin_headers, slug = await _register_and_login_with_slug(client, email="auditor-admin4@example.com")
+        analyst_a_headers = await _create_user_and_login(
+            client, admin_headers, slug, email="auditor-analyst4a@example.com"
+        )
+        analyst_b_headers = await _create_user_and_login(
+            client, admin_headers, slug, email="auditor-analyst4b@example.com"
+        )
+        conv_response = await client.post("/api/v1/conversations/", json={}, headers=analyst_a_headers)
+        conversation_id = conv_response.json()["data"]["id"]
+
+        response = await client.get(f"/api/v1/conversations/{conversation_id}/messages", headers=analyst_b_headers)
+        assert response.status_code == 403

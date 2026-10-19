@@ -217,3 +217,26 @@ Decisiones de seguridad relevantes si se retoma esto:
   (pagina ya construida en el frontend, falta solo el envio).
 - Un unico token activo a la vez por usuario (columna en `users`, no una tabla aparte): generar
   uno nuevo invalida cualquier anterior. Vence a los 30 minutos (`PASSWORD_RESET_EXPIRE_MINUTES`).
+
+## Rol de auditor del admin + cambio forzado de contrasena (2026-10-20)
+
+**Admin como auditor**: un admin ahora VE (nunca escribe en) las conversaciones de cualquier
+usuario de su tenant -- `GET /api/v1/conversations/` le trae las de todos (antes, cada quien
+solo veia las propias), con `user_email` para saber de quien es cada una; filtrable a un solo
+usuario con `?user_id=`. `GET /conversations/{id}/messages` y el nuevo `GET /conversations/{id}`
+usan `_get_viewable_conversation_or_404` (dueno O admin). `send_message`/`update_conversation`/
+`delete_conversation` siguen con `_get_own_conversation_or_404` (estrictamente el dueno): es
+auditoria de solo lectura, el admin no puede escribir en conversaciones ajenas (403). Frontend:
+`ConversationList` muestra el email del dueno cuando `showOwner` (admin); `chat/[id]/page.tsx`
+calcula `isOwner` comparando `conversation.user_id` contra el usuario actual y, si es false,
+oculta borrar/enviar mensaje y muestra un banner de "solo lectura".
+
+**Cambio forzado de contrasena**: `User.must_change_password` (migracion 0006) se marca `True`
+cuando un admin crea un usuario (`POST /api/v1/users/`, password asignada por el admin, no
+elegida por el usuario) y se limpia a `False` en `auth_service.change_password`/`reset_password`.
+`AppShell` redirige a `/change-password` (nueva pagina, PATCH /auth/me/password) si
+`must_change_password` es true, para CUALQUIER ruta protegida, con guard de pathname para no
+loopear sobre si misma. Se elimino `/settings` (pagina de cambio de contrasena voluntario, sin
+link en el sidebar) -- `/change-password` la reemplaza, alcanzable solo via el redirect forzado
+(o escribiendo la URL a mano). `app/users/page.tsx` muestra una badge "Debe cambiar contraseña"
+mientras el usuario creado no la haya cambiado.

@@ -175,3 +175,40 @@ class TestAuth:
             "/auth/reset-password", json={"token": "token-que-nunca-existio", "new_password": "NewPassword456!"}
         )
         assert response.status_code == 400
+
+    async def test_self_registered_admin_has_must_change_password_false(self, client):
+        """El admin que se auto-registra eligio su propia contrasena: no debe forzarse a cambiarla."""
+        _, slug = await _register(client, email="self-admin@example.com", password="SecurePass123!")
+        login_response = await _login(client, "self-admin@example.com", "SecurePass123!", slug)
+        headers = {"Authorization": f"Bearer {login_response.json()['data']['access_token']}"}
+
+        me_response = await client.get("/auth/me", headers=headers)
+        assert me_response.json()["data"]["must_change_password"] is False
+
+    async def test_admin_created_user_must_change_password_until_changed(self, client):
+        """Un usuario creado por un admin (contrasena asignada, no elegida por el) debe quedar
+        con must_change_password=True hasta que la cambie -- despues, False."""
+        _, slug = await _register(client, email="creator-admin@example.com", password="SecurePass123!")
+        admin_login = await _login(client, "creator-admin@example.com", "SecurePass123!", slug)
+        admin_headers = {"Authorization": f"Bearer {admin_login.json()['data']['access_token']}"}
+
+        await client.post(
+            "/api/v1/users/",
+            json={"email": "nuevo-analista@example.com", "password": "TempPass123!", "role": "analyst"},
+            headers=admin_headers,
+        )
+        user_login = await _login(client, "nuevo-analista@example.com", "TempPass123!", slug)
+        user_headers = {"Authorization": f"Bearer {user_login.json()['data']['access_token']}"}
+
+        me_before = await client.get("/auth/me", headers=user_headers)
+        assert me_before.json()["data"]["must_change_password"] is True
+
+        change_response = await client.patch(
+            "/auth/me/password",
+            json={"current_password": "TempPass123!", "new_password": "DefinitivaPass456!"},
+            headers=user_headers,
+        )
+        assert change_response.status_code == 200
+
+        me_after = await client.get("/auth/me", headers=user_headers)
+        assert me_after.json()["data"]["must_change_password"] is False

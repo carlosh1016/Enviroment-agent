@@ -26,6 +26,11 @@ class ConversationRead(BaseModel):
     id: uuid.UUID
     tenant_id: uuid.UUID
     user_id: uuid.UUID | None
+    # Poblado por el router (no es una columna de Conversation): email del dueno de la
+    # conversacion. Siempre se incluye, aunque para un usuario no-admin viendo su propia lista
+    # es simplemente su propio email -- no revela nada nuevo. Relevante quien SI importa cuando
+    # un admin ve las conversaciones de todo el tenant (ver list_conversations).
+    user_email: str | None = None
     title: str | None
     created_at: datetime
     updated_at: datetime

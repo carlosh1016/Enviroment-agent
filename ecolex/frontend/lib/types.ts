@@ -16,6 +16,7 @@ export interface CurrentUser {
   email: string;
   role: string;
   is_active: boolean;
+  must_change_password: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -42,6 +43,10 @@ export interface PaginatedResponse<T> {
 
 export interface ConversationItem {
   id: string;
+  user_id: string | null;
+  // Email del dueno de la conversacion. Para un admin viendo las conversaciones de todo el
+  // tenant, permite saber de quien es cada una (ver TestAdminAuditorView en el backend).
+  user_email?: string | null;
   title?: string | null;
   created_at: string;
   updated_at: string;
@@ -75,6 +80,7 @@ export interface ManagedUser {
   email: string;
   role: UserRoleValue;
   is_active: boolean;
+  must_change_password: boolean;
   created_at: string;
 }
 

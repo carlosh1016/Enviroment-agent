@@ -12,9 +12,19 @@ interface ConversationListProps {
   creating: boolean;
   error: string | null;
   onCreate: () => void;
+  // El admin ve las conversaciones de TODO el tenant (rol de auditor, ver backend); en ese caso
+  // mostramos de quien es cada una. Para un usuario normal (solo ve las suyas) seria redundante.
+  showOwner?: boolean;
 }
 
-export function ConversationList({ conversations, loading, creating, error, onCreate }: ConversationListProps) {
+export function ConversationList({
+  conversations,
+  loading,
+  creating,
+  error,
+  onCreate,
+  showOwner = false,
+}: ConversationListProps) {
   const pathname = usePathname();
 
   return (
@@ -57,6 +67,12 @@ export function ConversationList({ conversations, loading, creating, error, onCr
               >
                 {conv.title ?? "Consulta sin título"}
               </span>
+              {showOwner && conv.user_email && (
+                <span className="flex items-center gap-1 font-label-sm text-label-sm text-secondary truncate">
+                  <span className="material-symbols-outlined text-[13px]">person</span>
+                  {conv.user_email}
+                </span>
+              )}
               <span className="font-label-sm text-label-sm text-outline">{formatDate(conv.updated_at)}</span>
             </Link>
           );

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/store";
 import { useHydrated } from "@/lib/hooks/use-hydrated";
 import { api } from "@/lib/api";
@@ -15,8 +15,11 @@ import { Header } from "./header";
  * Si hay token pero no hay datos de usuario en cache (ej. refresh de pagina),
  * los recupera de GET /auth/me antes de renderizar el contenido.
  */
+const FORCED_PASSWORD_CHANGE_PATH = "/change-password";
+
 export function AppShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
+  const pathname = usePathname();
   const hydrated = useHydrated();
   const accessToken = useAuthStore((state) => state.accessToken);
   const user = useAuthStore((state) => state.user);
@@ -33,20 +36,32 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       router.replace("/login");
       return;
     }
+
+    function enforcePasswordChange(currentUser: CurrentUser): boolean {
+      // Un usuario que un admin creo con una contrasena temporal no puede usar el resto de
+      // la app hasta cambiarla (ver backend: User.must_change_password). El guard de pathname
+      // evita un loop de redireccion hacia la propia pagina de cambio.
+      if (currentUser.must_change_password && pathname !== FORCED_PASSWORD_CHANGE_PATH) {
+        router.replace(FORCED_PASSWORD_CHANGE_PATH);
+        return true;
+      }
+      return false;
+    }
+
     if (user) {
-      setReady(true);
+      if (!enforcePasswordChange(user)) setReady(true);
       return;
     }
     api
       .get<ApiEnvelope<CurrentUser>>("/auth/me")
       .then((res) => {
         setUser(res.data.data);
-        setReady(true);
+        if (!enforcePasswordChange(res.data.data)) setReady(true);
       })
       .catch(() => {
         router.replace("/login");
       });
-  }, [hydrated, accessToken, user, router, setUser]);
+  }, [hydrated, accessToken, user, router, setUser, pathname]);
 
   if (!ready) {
     return (

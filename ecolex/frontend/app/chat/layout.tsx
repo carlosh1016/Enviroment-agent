@@ -3,9 +3,11 @@
 import { AppShell } from "@/components/layout/app-shell";
 import { ConversationList } from "@/components/chat/conversation-list";
 import { useConversations } from "@/lib/hooks/use-conversations";
+import { useAuthStore } from "@/lib/store";
 
 export default function ChatLayout({ children }: { children: React.ReactNode }) {
   const { conversations, loading, creating, error, createConversation } = useConversations();
+  const isAdmin = useAuthStore((state) => state.user?.role === "admin");
 
   return (
     <AppShell>
@@ -16,6 +18,7 @@ export default function ChatLayout({ children }: { children: React.ReactNode }) 
           creating={creating}
           error={error}
           onCreate={createConversation}
+          showOwner={isAdmin}
         />
         <section className="xl:col-span-8 2xl:col-span-9 xl:h-full flex flex-col bg-surface-container-lowest rounded-xl shadow-sm overflow-hidden">
           {children}

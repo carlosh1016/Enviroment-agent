@@ -192,15 +192,20 @@ async def reset_password(db: AsyncSession, token: str, new_password: str) -> boo
     user.hashed_password = hash_password(new_password)
     user.reset_token_hash = None
     user.reset_token_expires_at = None
+    user.must_change_password = False
     await db.commit()
     return True
 
 
 async def change_password(db: AsyncSession, user: User, current_password: str, new_password: str) -> bool:
     """Cambia la contrasena de un usuario ya autenticado, validando primero la contrasena
-    actual. Retorna False si la contrasena actual no coincide."""
+    actual. Retorna False si la contrasena actual no coincide.
+
+    Limpia must_change_password: este es tambien el camino que usa la pantalla de cambio
+    obligatorio (ver UserCreate en routers/users.py) para "liberar" al usuario."""
     if not verify_password(current_password, user.hashed_password):
         return False
     user.hashed_password = hash_password(new_password)
+    user.must_change_password = False
     await db.commit()
     return True

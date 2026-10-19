@@ -39,6 +39,11 @@ class User(Base):
         default=UserRole.VIEWER,
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # True cuando un admin crea el usuario con una contrasena asignada por el (UserCreate.password
+    # en routers/users.py): el frontend lo fuerza a definir una propia antes de usar el resto de
+    # la app (ver AppShell). False para el admin que se auto-registra (eligio su propia clave) y
+    # para cualquiera que ya la cambio o la reseteo (auth_service.change_password/reset_password).
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     # Recuperacion de contrasena (ver auth_service.request_password_reset/reset_password):
     # hash SHA-256 (no bcrypt) del token de un solo uso vigente, y su expiracion. Un unico
     # token activo a la vez por usuario (generar uno nuevo invalida cualquier anterior).

@@ -202,14 +202,25 @@ export default function UsersPage() {
                     )}
                   </TableCell>
                   <TableCell>
-                    <span
-                      className={`inline-flex items-center gap-1.5 px-space-sm py-0.5 rounded-full font-label-sm text-label-sm font-medium ${
-                        u.is_active ? "bg-emerald-50 text-emerald-800" : "bg-red-100 text-red-900"
-                      }`}
-                    >
-                      <span className={`w-2 h-2 rounded-full ${u.is_active ? "bg-secondary" : "bg-error"}`} />
-                      {u.is_active ? "Activo" : "Inactivo"}
-                    </span>
+                    <div className="flex flex-col gap-1 items-start">
+                      <span
+                        className={`inline-flex items-center gap-1.5 px-space-sm py-0.5 rounded-full font-label-sm text-label-sm font-medium ${
+                          u.is_active ? "bg-emerald-50 text-emerald-800" : "bg-red-100 text-red-900"
+                        }`}
+                      >
+                        <span className={`w-2 h-2 rounded-full ${u.is_active ? "bg-secondary" : "bg-error"}`} />
+                        {u.is_active ? "Activo" : "Inactivo"}
+                      </span>
+                      {u.must_change_password && (
+                        <span
+                          className="inline-flex items-center gap-1.5 px-space-sm py-0.5 rounded-full font-label-sm text-label-sm font-medium bg-amber-100 text-amber-900"
+                          title="Aun no ha cambiado la contraseña temporal asignada"
+                        >
+                          <span className="material-symbols-outlined text-[12px]">lock_clock</span>
+                          Debe cambiar contraseña
+                        </span>
+                      )}
+                    </div>
                   </TableCell>
                   <TableCell className="text-on-surface-variant font-body-sm text-body-sm">
                     {formatDate(u.created_at)}

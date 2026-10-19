@@ -9,7 +9,7 @@ from app.deps import get_current_tenant, get_current_user
 from app.logging_config import get_logger
 from app.models.conversation import Conversation, Message, MessageRole
 from app.models.tenant import Tenant
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.schemas import success_response
 from app.schemas.conversation import (
     ConversationCreate,
@@ -28,7 +28,8 @@ logger = get_logger(__name__)
 async def _get_own_conversation_or_404(
     db: AsyncSession, conversation_id: uuid.UUID, tenant_id: uuid.UUID, user_id: uuid.UUID
 ) -> Conversation:
-    """Obtiene una conversacion validando tenant (404) y propiedad del usuario autenticado (403)."""
+    """Obtiene una conversacion validando tenant (404) y propiedad del usuario autenticado (403).
+    Usado para escribir (enviar mensaje, renombrar, borrar): solo el dueno puede."""
     result = await db.execute(
         select(Conversation).where(Conversation.id == conversation_id, Conversation.tenant_id == tenant_id)
     )
@@ -38,6 +39,39 @@ async def _get_own_conversation_or_404(
     if conversation.user_id != user_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No tiene acceso a esta conversacion")
     return conversation
+
+
+async def _get_viewable_conversation_or_404(
+    db: AsyncSession, conversation_id: uuid.UUID, tenant_id: uuid.UUID, current_user: User
+) -> Conversation:
+    """Como _get_own_conversation_or_404, pero tambien permite a un admin VER (nunca escribir)
+    cualquier conversacion de su tenant -- rol de auditor sobre lo que preguntan analistas y
+    viewers. Usado solo para lectura (ver mensajes, detalle de la conversacion)."""
+    result = await db.execute(
+        select(Conversation).where(Conversation.id == conversation_id, Conversation.tenant_id == tenant_id)
+    )
+    conversation = result.scalar_one_or_none()
+    if conversation is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversacion no encontrada")
+    if conversation.user_id != current_user.id and current_user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No tiene acceso a esta conversacion")
+    return conversation
+
+
+async def _get_user_emails(db: AsyncSession, user_ids: set[uuid.UUID]) -> dict[uuid.UUID, str]:
+    """Obtiene en un solo query el email de un conjunto de usuarios (para mostrar de quien es
+    cada conversacion cuando un admin ve las de todo el tenant)."""
+    user_ids.discard(None)
+    if not user_ids:
+        return {}
+    result = await db.execute(select(User.id, User.email).where(User.id.in_(user_ids)))
+    return {user_id: email for user_id, email in result.all()}
+
+
+def _to_conversation_read(conversation: Conversation, emails: dict[uuid.UUID, str]) -> ConversationRead:
+    return ConversationRead.model_validate(conversation).model_copy(
+        update={"user_email": emails.get(conversation.user_id)}
+    )
 
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
@@ -54,8 +88,25 @@ async def create_conversation(
     await db.refresh(conversation)
 
     return success_response(
-        data=ConversationRead.model_validate(conversation).model_dump(mode="json"),
+        data=_to_conversation_read(conversation, {current_user.id: current_user.email}).model_dump(mode="json"),
         message="Conversacion creada exitosamente",
+    )
+
+
+@router.get("/{conversation_id}")
+async def get_conversation(
+    conversation_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+    current_user: User = Depends(get_current_user),
+):
+    """Detalle de una conversacion (titulo, dueno). Dueno o admin del tenant (ver nota de rol
+    de auditor en _get_viewable_conversation_or_404)."""
+    conversation = await _get_viewable_conversation_or_404(db, conversation_id, tenant.id, current_user)
+    emails = await _get_user_emails(db, {conversation.user_id})
+    return success_response(
+        data=_to_conversation_read(conversation, emails).model_dump(mode="json"),
+        message="Conversacion obtenida exitosamente",
     )
 
 
@@ -63,14 +114,24 @@ async def create_conversation(
 async def list_conversations(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
+    user_id: uuid.UUID | None = Query(default=None, description="Solo admin: filtra por un usuario especifico"),
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
     current_user: User = Depends(get_current_user),
 ):
-    """Lista las conversaciones del usuario autenticado (no las de otros usuarios del mismo tenant)."""
-    base_query = select(Conversation).where(
-        Conversation.tenant_id == tenant.id, Conversation.user_id == current_user.id
-    )
+    """Lista conversaciones del tenant actual.
+
+    Un analyst/viewer solo ve las propias. Un admin ve las de TODOS los usuarios del tenant (rol
+    de auditor sobre que preguntan), opcionalmente filtradas a un solo usuario con ?user_id=.
+    """
+    conditions = [Conversation.tenant_id == tenant.id]
+    if current_user.role == UserRole.ADMIN:
+        if user_id is not None:
+            conditions.append(Conversation.user_id == user_id)
+    else:
+        conditions.append(Conversation.user_id == current_user.id)
+
+    base_query = select(Conversation).where(*conditions)
 
     count_result = await db.execute(select(func.count()).select_from(base_query.subquery()))
     total = count_result.scalar_one()
@@ -80,8 +141,10 @@ async def list_conversations(
     )
     conversations = result.scalars().all()
 
+    emails = await _get_user_emails(db, {c.user_id for c in conversations})
+
     data = PaginatedConversations(
-        items=[ConversationRead.model_validate(c) for c in conversations],
+        items=[_to_conversation_read(c, emails) for c in conversations],
         total=total,
         page=page,
         page_size=page_size,
@@ -135,8 +198,9 @@ async def get_messages(
     tenant: Tenant = Depends(get_current_tenant),
     current_user: User = Depends(get_current_user),
 ):
-    """Retorna el historial completo de una conversacion en orden cronologico."""
-    await _get_own_conversation_or_404(db, conversation_id, tenant.id, current_user.id)
+    """Retorna el historial completo de una conversacion en orden cronologico. Dueno o admin
+    del tenant (rol de auditor, ver _get_viewable_conversation_or_404)."""
+    await _get_viewable_conversation_or_404(db, conversation_id, tenant.id, current_user)
 
     result = await db.execute(
         select(Message).where(Message.conversation_id == conversation_id).order_by(Message.created_at.asc())
