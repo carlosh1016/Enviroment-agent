@@ -3,12 +3,15 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { api } from "@/lib/api";
-import { getErrorMessage, MSG_CHAT_FAILED } from "@/lib/errors";
+import { getBlobErrorMessage, getErrorMessage, MSG_CHAT_FAILED } from "@/lib/errors";
 import { notifyConversationsChanged } from "@/lib/hooks/use-conversations";
+import { downloadConversationReport } from "@/lib/reports";
 import { MessageBubble } from "@/components/chat/message-bubble";
 import { ChatInput } from "@/components/chat/chat-input";
 import { ErrorBanner } from "@/components/ui/error-banner";
 import type { ApiEnvelope, MessageItem } from "@/lib/types";
+
+const MIN_MESSAGES_FOR_REPORT = 2;
 
 const TITLE_MAX_CHARS = 50;
 
@@ -23,6 +26,8 @@ export default function ConversationPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [chatError, setChatError] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [reportError, setReportError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -77,6 +82,18 @@ export default function ConversationPage() {
     }
   }
 
+  async function handleDownloadReport() {
+    setReportError(null);
+    setReportLoading(true);
+    try {
+      await downloadConversationReport(conversationId);
+    } catch (err) {
+      setReportError(await getBlobErrorMessage(err, "No se pudo generar el informe."));
+    } finally {
+      setReportLoading(false);
+    }
+  }
+
   async function handleDeleteConversation() {
     if (!confirm("¿Eliminar esta conversación y todos sus mensajes?")) return;
     setDeleteError(null);
@@ -98,17 +115,35 @@ export default function ConversationPage() {
             Consulta Jurídica
           </h1>
         </div>
-        <button
-          type="button"
-          onClick={handleDeleteConversation}
-          className="p-space-xs text-on-surface-variant hover:text-error hover:bg-surface-container-low rounded-xl transition-colors"
-          title="Eliminar conversación"
-        >
-          <span className="material-symbols-outlined text-[20px]">delete_sweep</span>
-        </button>
+        <div className="flex items-center gap-space-xs">
+          <button
+            type="button"
+            onClick={handleDownloadReport}
+            disabled={reportLoading || messages.length < MIN_MESSAGES_FOR_REPORT}
+            title={
+              messages.length < MIN_MESSAGES_FOR_REPORT
+                ? "Se necesitan al menos 2 mensajes para generar un informe"
+                : "Descargar informe PDF de cumplimiento"
+            }
+            className="p-space-xs text-on-surface-variant hover:text-primary hover:bg-surface-container-low rounded-xl transition-colors disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-on-surface-variant"
+          >
+            <span className={`material-symbols-outlined text-[20px] ${reportLoading ? "animate-spin" : ""}`}>
+              {reportLoading ? "progress_activity" : "picture_as_pdf"}
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={handleDeleteConversation}
+            className="p-space-xs text-on-surface-variant hover:text-error hover:bg-surface-container-low rounded-xl transition-colors"
+            title="Eliminar conversación"
+          >
+            <span className="material-symbols-outlined text-[20px]">delete_sweep</span>
+          </button>
+        </div>
       </header>
 
       <div className="flex-1 min-h-0 overflow-y-auto p-space-lg flex flex-col gap-space-lg bg-surface">
+        <ErrorBanner message={reportError} />
         <ErrorBanner message={deleteError} />
         <ErrorBanner message={loadError} />
         {loading && <p className="font-body-sm text-body-sm text-on-surface-variant">Cargando...</p>}
