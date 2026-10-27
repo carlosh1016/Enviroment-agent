@@ -7,6 +7,12 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      # Solo en loopback del servidor (127.0.0.1): NUNCA llega desde internet, ni con el
+      # firewall abierto, porque el kernel descarta paquetes externos destinados a 127.0.0.1.
+      # Existe para poder conectarse via tunel SSH (ej. DBeaver) desde una PC personal sin
+      # exponer Postgres directamente -- ver CLAUDE.md / documento de credenciales.
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
