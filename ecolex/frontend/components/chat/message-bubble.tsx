@@ -1,10 +1,64 @@
 "use client";
 
 import { useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { openDocumentFile } from "@/lib/documents";
 import { getErrorMessage } from "@/lib/errors";
 import type { MessageItem } from "@/lib/types";
 import { ErrorBanner } from "@/components/ui/error-banner";
+
+// Componentes custom para que el Markdown de las respuestas del agente (tablas, listas,
+// negritas) se vea con los mismos tokens tipograficos/de color del design system, en vez de
+// con los estilos por defecto del navegador.
+const markdownComponents = {
+  p: ({ children }: { children?: React.ReactNode }) => <p className="leading-relaxed">{children}</p>,
+  strong: ({ children }: { children?: React.ReactNode }) => (
+    <strong className="font-semibold text-on-surface">{children}</strong>
+  ),
+  ul: ({ children }: { children?: React.ReactNode }) => (
+    <ul className="list-disc pl-5 space-y-1">{children}</ul>
+  ),
+  ol: ({ children }: { children?: React.ReactNode }) => (
+    <ol className="list-decimal pl-5 space-y-1">{children}</ol>
+  ),
+  li: ({ children }: { children?: React.ReactNode }) => <li className="leading-relaxed">{children}</li>,
+  a: ({ children, href }: { children?: React.ReactNode; href?: string }) => (
+    <a href={href} target="_blank" rel="noopener noreferrer" className="text-secondary underline hover:text-primary">
+      {children}
+    </a>
+  ),
+  h1: ({ children }: { children?: React.ReactNode }) => (
+    <h3 className="font-label-md text-label-md font-semibold text-on-surface mt-1">{children}</h3>
+  ),
+  h2: ({ children }: { children?: React.ReactNode }) => (
+    <h3 className="font-label-md text-label-md font-semibold text-on-surface mt-1">{children}</h3>
+  ),
+  h3: ({ children }: { children?: React.ReactNode }) => (
+    <h3 className="font-label-md text-label-md font-semibold text-on-surface mt-1">{children}</h3>
+  ),
+  code: ({ children }: { children?: React.ReactNode }) => (
+    <code className="bg-surface-container-low rounded px-1 py-0.5 font-mono text-body-sm">{children}</code>
+  ),
+  table: ({ children }: { children?: React.ReactNode }) => (
+    <div className="overflow-x-auto rounded-xl border border-surface-variant">
+      <table className="w-full border-collapse text-left">{children}</table>
+    </div>
+  ),
+  thead: ({ children }: { children?: React.ReactNode }) => (
+    <thead className="bg-surface-container-low">{children}</thead>
+  ),
+  th: ({ children }: { children?: React.ReactNode }) => (
+    <th className="font-label-md text-label-md font-semibold text-on-surface p-space-sm border-b border-surface-variant">
+      {children}
+    </th>
+  ),
+  td: ({ children }: { children?: React.ReactNode }) => (
+    <td className="font-body-sm text-body-sm text-on-surface p-space-sm border-b border-surface-variant align-top">
+      {children}
+    </td>
+  ),
+};
 
 export function MessageBubble({ message }: { message: MessageItem }) {
   const [sourcesOpen, setSourcesOpen] = useState(false);
@@ -39,8 +93,10 @@ export function MessageBubble({ message }: { message: MessageItem }) {
       </div>
       <div className="flex flex-col gap-space-xs flex-1">
         <div className="p-space-md bg-surface-container-lowest rounded-2xl rounded-tl-none shadow-md flex flex-col gap-space-sm">
-          <div className="font-body-md text-body-md text-on-surface leading-relaxed whitespace-pre-wrap">
-            {message.content}
+          <div className="font-body-md text-body-md text-on-surface leading-relaxed flex flex-col gap-space-xs [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+              {message.content}
+            </ReactMarkdown>
           </div>
 
           {sources.length > 0 && (

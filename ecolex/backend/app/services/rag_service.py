@@ -1,4 +1,5 @@
 import asyncio
+import re
 import uuid
 
 from sqlalchemy import bindparam, select, text
@@ -36,15 +37,37 @@ MAX_SUBQUERIES = 4
 MAX_RELEVANT_CHUNKS = 10
 
 SYSTEM_PROMPT = (
-    "Eres un asistente legal especializado en normativa ambiental colombiana. Respondes "
-    "preguntas sobre el Decreto 1076 de 2015 y sus resoluciones complementarias.\n"
+    "Eres el asistente de Ecolex: ayudas a personas de empresas colombianas a entender la "
+    "normativa ambiental (Decreto 1076 de 2015 y sus resoluciones complementarias) sin tener "
+    "que leerse el decreto completo.\n"
     "REGLAS:\n"
     "- Fundamenta SIEMPRE tus respuestas en los fragmentos normativos proporcionados\n"
     "- Cita la fuente exacta: nombre del documento y numero de articulo\n"
     "- Si la informacion no esta en los fragmentos, dilo explicitamente\n"
     "- Mantén el hilo de la conversacion usando el historial previo\n"
-    "- Responde en español, en tono formal pero claro"
+    "- Responde en español, con un tono cercano y conversacional, como si le explicaras el "
+    "tema a un colega: directo, sin rodeos ni relleno innecesario, y sin sonar como un "
+    "documento legal o un comunicado corporativo. Evita frases hechas de \"asistente formal\" "
+    "(ej. \"estare encantado de ayudarte\", \"no dude en consultarme\"); ve directo al punto.\n"
+    "- La precision tecnica y las citas NO son negociables: cercano en el tono, riguroso en el "
+    "contenido\n"
+    "- Puedes usar formato Markdown (negritas, listas, titulos cortos) cuando ayude a que la "
+    "respuesta se entienda mejor. Si la pregunta implica comparar varias opciones, permisos o "
+    "requisitos, usa una tabla Markdown (con encabezados `|---|---|`) en vez de un parrafo "
+    "largo; para todo lo demas, prosa normal\n"
+    "- Cada fragmento de contexto viene marcado como [Fuente N: ...]. Al final de tu respuesta "
+    "(nunca antes, el usuario no vera esta linea), agrega una linea nueva con EXACTAMENTE este "
+    "formato: `FUENTES: N,N,N` listando SOLO los numeros N de los fragmentos que de verdad "
+    "usaste para construir la respuesta (no todos los que recibiste). Si no te basaste en "
+    "ningun fragmento en particular, escribe `FUENTES: ninguna`"
 )
+
+# Marca interna que el LLM agrega al final de su respuesta (ver SYSTEM_PROMPT) para declarar
+# cuales [Fuente N] realmente cito. Se parsea y se quita antes de mostrarle el texto al usuario;
+# existe para que la UI solo muestre como "fuentes" las que de verdad informaron la respuesta,
+# no las ~10 que se le pasaron de contexto (la mayoria, en un corpus normativo grande, suenan
+# relevantes por similitud pero no son las que el modelo termino usando).
+_SOURCES_FOOTER_RE = re.compile(r"^[ \t]*FUENTES:[ \t]*([^\n]*)[ \t]*\s*\Z", re.IGNORECASE | re.MULTILINE)
 
 TITLE_SYSTEM_PROMPT = (
     f"Genera un titulo corto (maximo {TITLE_MAX_WORDS} palabras) para una conversacion que "
@@ -235,12 +258,13 @@ async def generate_response(
 
     if chunks:
         context_text = "\n\n".join(
-            "[Fuente: {document_name}{articulo}]\n{content}".format(
+            "[Fuente {n}: {document_name}{articulo}]\n{content}".format(
+                n=i + 1,
                 document_name=chunk.get("document_name", "desconocido"),
                 articulo=f" - Articulo {chunk['numero_articulo']}" if chunk.get("numero_articulo") else "",
                 content=chunk["content"],
             )
-            for chunk in chunks
+            for i, chunk in enumerate(chunks)
         )
         messages.append({"role": "system", "content": f"Fragmentos normativos relevantes:\n\n{context_text}"})
 
@@ -251,6 +275,41 @@ async def generate_response(
     messages.append({"role": "user", "content": query})
 
     return await openrouter_client.chat_completion(messages, model=model, max_tokens=OPENROUTER_MAX_TOKENS)
+
+
+def _extract_cited_sources(response_text: str, total_chunks: int) -> tuple[str, set[int] | None]:
+    """Separa la marca `FUENTES: N,N,...` que el LLM agrega al final de su respuesta (ver
+    SYSTEM_PROMPT) del texto que vera el usuario, y la traduce a los indices 0-based de `chunks`
+    que realmente se citaron.
+
+    Devuelve (texto_sin_la_marca, indices_citados). `indices_citados` es un set() vacio si el
+    LLM declaro explicitamente que no se baso en ningun fragmento puntual, o None si la marca no
+    aparecio o no se pudo parsear (el LLM no siguio el formato) -- en ese caso el llamador debe
+    asumir que no hay informacion confiable y mostrar todos los fragmentos recuperados como
+    fuentes (comportamiento previo, mas ruidoso pero nunca oculta una cita real).
+    """
+    match = _SOURCES_FOOTER_RE.search(response_text)
+    if not match:
+        return response_text, None
+
+    cleaned_text = response_text[: match.start()].rstrip()
+    raw = match.group(1).strip().lower()
+    if raw in ("", "ninguna", "ninguno", "none"):
+        return cleaned_text, set()
+
+    normalized = raw.replace(" y ", ",").replace(";", ",")
+    indices: set[int] = set()
+    for part in normalized.split(","):
+        part = part.strip()
+        if part.isdigit():
+            n = int(part)
+            if 1 <= n <= total_chunks:
+                indices.add(n - 1)
+
+    if not indices:
+        return cleaned_text, None
+
+    return cleaned_text, indices
 
 
 async def _generate_session_title(first_message: str) -> str:
@@ -277,7 +336,8 @@ async def chat(
     El mensaje del usuario (user_message_id) ya fue guardado por el router antes de llamar aqui,
     para que no se pierda si el RAG falla; se excluye del historial porque se envia aparte como
     la pregunta actual. Guarda en el Message del assistant los source_chunks (documento, chunk,
-    score y ubicacion normativa) usados como contexto.
+    score y ubicacion normativa) que el LLM declaro haber citado (ver _extract_cited_sources),
+    no todos los recuperados como contexto.
 
     Si el titulo de la conversacion es NULL, lo genera automaticamente a partir de este mensaje;
     un fallo generando el titulo no debe tumbar la respuesta del agente.
@@ -304,6 +364,15 @@ async def chat(
         ]
 
         response_text = await generate_response(user_message, chunks_for_prompt, history, CHAT_MODEL)
+        response_text, cited_indices = _extract_cited_sources(response_text, len(relevant_chunks))
+
+        # Si el LLM declaro cuales [Fuente N] cito de verdad, solo esas se muestran como fuentes
+        # (ver _extract_cited_sources); si no pudo parsearse (None), se cae al comportamiento
+        # previo de mostrar todo lo recuperado, para no ocultar una cita real por un fallo de
+        # formato.
+        chunks_to_show = (
+            [relevant_chunks[i] for i in sorted(cited_indices)] if cited_indices is not None else relevant_chunks
+        )
 
         sources = [
             {
@@ -314,7 +383,7 @@ async def chat(
                 "numero_articulo": chunk["numero_articulo"],
                 "pagina_origen": chunk["pagina_origen"],
             }
-            for chunk in relevant_chunks
+            for chunk in chunks_to_show
         ]
 
     assistant_msg = Message(

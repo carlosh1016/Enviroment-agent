@@ -11,6 +11,8 @@ organization_id/project_id. Una "sesion de conversacion" es el modelo Conversati
 import uuid
 from unittest.mock import AsyncMock, patch
 
+from app.services.rag_service import _extract_cited_sources
+
 
 def _unique_slug(prefix: str = "tenant") -> str:
     """Genera un slug unico de organizacion para evitar colisiones entre tests."""
@@ -84,6 +86,48 @@ def _patched_title_generation(title: str = "Consulta sobre licenciamiento ambien
         "app.services.rag_service.openrouter_client.chat_completion",
         new=AsyncMock(return_value=title),
     )
+
+
+class TestExtractCitedSources:
+    """_extract_cited_sources separa la marca `FUENTES: N,N` que el LLM agrega al final de su
+    respuesta (ver SYSTEM_PROMPT) y la traduce a los indices 0-based realmente citados, para que
+    el usuario solo vea como "fuentes" las que de verdad informaron la respuesta."""
+
+    def test_strips_footer_and_returns_cited_indices(self):
+        text = "El articulo 5 exige licencia ambiental.\n\nFUENTES: 1,3"
+        cleaned, indices = _extract_cited_sources(text, total_chunks=5)
+
+        assert cleaned == "El articulo 5 exige licencia ambiental."
+        assert indices == {0, 2}
+
+    def test_ninguna_returns_empty_set_not_none(self):
+        """'ninguna' es una declaracion explicita de que no hubo citas puntuales: debe ocultar
+        todas las fuentes, a diferencia de un parseo fallido (None), que cae al fallback de
+        mostrarlas todas."""
+        text = "No encontre nada especifico sobre eso en los fragmentos.\nFUENTES: ninguna"
+        cleaned, indices = _extract_cited_sources(text, total_chunks=5)
+
+        assert "FUENTES" not in cleaned
+        assert indices == set()
+
+    def test_missing_footer_returns_none(self):
+        text = "El articulo 5 exige licencia ambiental."
+        cleaned, indices = _extract_cited_sources(text, total_chunks=5)
+
+        assert cleaned == text
+        assert indices is None
+
+    def test_out_of_range_indices_are_ignored(self):
+        text = "Respuesta.\nFUENTES: 1,99"
+        _, indices = _extract_cited_sources(text, total_chunks=3)
+
+        assert indices == {0}
+
+    def test_tolerates_natural_language_separator(self):
+        text = "Respuesta.\nFUENTES: 1 y 2"
+        _, indices = _extract_cited_sources(text, total_chunks=3)
+
+        assert indices == {0, 1}
 
 
 class TestConversationSessions:
@@ -179,6 +223,40 @@ class TestSendMessage:
         assert response.status_code == 200
         assert len(body["data"]["content"]) > 0
         assert len(body["data"]["source_chunks"]) == 2
+
+    async def test_only_cited_sources_are_shown(self, client):
+        """Si el LLM recibio 3 fragmentos pero solo declaro haber citado 1 (via `FUENTES: N`),
+        source_chunks debe tener 1 entrada, no las 3 recuperadas, y la marca no debe quedar
+        visible en el content."""
+        headers = await _register_and_login(client, email="rag-cited-only@example.com")
+        session_response = await client.post("/api/v1/conversations/", json={}, headers=headers)
+        session_id = session_response.json()["data"]["id"]
+
+        chunks = [
+            _mock_chunk(chunk_index=0, numero_articulo="5"),
+            _mock_chunk(chunk_index=1, numero_articulo="6"),
+            _mock_chunk(chunk_index=2, numero_articulo="7"),
+        ]
+
+        with (
+            patch("app.services.rag_service.retrieve_relevant_chunks", new=AsyncMock(return_value=chunks)),
+            patch(
+                "app.services.rag_service.generate_response",
+                new=AsyncMock(return_value="El articulo 6 establece el requisito.\n\nFUENTES: 2"),
+            ),
+            _patched_title_generation(),
+        ):
+            response = await client.post(
+                f"/api/v1/conversations/{session_id}/messages",
+                json={"content": "Cual es el requisito del articulo 6?"},
+                headers=headers,
+            )
+
+        body = response.json()
+        assert response.status_code == 200
+        assert "FUENTES" not in body["data"]["content"]
+        assert len(body["data"]["source_chunks"]) == 1
+        assert body["data"]["source_chunks"][0]["chunk_index"] == 1
 
 
 class TestConversationHistory:
