@@ -21,14 +21,20 @@ function _messageForStatus(status: number, serverMessage: string | null, fallbac
  * consistente entre pantallas (422, 429, 403, 404, 5xx y red caida).
  * `fallback` se usa para 5xx y errores no HTTP, para que cada pantalla diga
  * que accion fallo.
+ *
+ * Si `err` no es un error de axios (ej. una validacion propia del frontend, como un
+ * `window.open` bloqueado), se usa su `.message` en vez de `fallback` directamente -- si no,
+ * un mensaje especifico y util queda escondido detras del generico sin que se note el bug.
  */
 export function getErrorMessage(err: unknown, fallback: string = MSG_GENERIC): string {
-  if (!axios.isAxiosError(err)) return fallback;
-  if (!err.response) return MSG_NETWORK;
-
-  const { status, data } = err.response;
-  const serverMessage = typeof data?.message === "string" ? data.message : null;
-  return _messageForStatus(status, serverMessage, fallback);
+  if (axios.isAxiosError(err)) {
+    if (!err.response) return MSG_NETWORK;
+    const { status, data } = err.response;
+    const serverMessage = typeof data?.message === "string" ? data.message : null;
+    return _messageForStatus(status, serverMessage, fallback);
+  }
+  if (err instanceof Error && err.message) return err.message;
+  return fallback;
 }
 
 /**
