@@ -2,14 +2,22 @@
 
 import { useAuthStore } from "@/lib/store";
 
-export function Header() {
+export function Header({ onMenuClick }: { onMenuClick: () => void }) {
   const user = useAuthStore((state) => state.user);
   const initials = user?.email?.slice(0, 2).toUpperCase() ?? "??";
 
   return (
-    <header className="fixed top-0 left-64 right-0 h-16 bg-surface-container-lowest/90 backdrop-blur-xl z-40 px-space-lg flex items-center justify-between shadow-[0_1px_8px_rgba(27,67,50,0.05)]">
-      <div className="flex items-center gap-space-lg flex-1 max-w-xl">
-        <div className="relative w-full max-w-md">
+    <header className="fixed top-0 left-0 md:left-64 right-0 h-16 bg-surface-container-lowest/90 backdrop-blur-xl z-30 px-space-md md:px-space-lg flex items-center justify-between shadow-[0_1px_8px_rgba(27,67,50,0.05)]">
+      <div className="flex items-center gap-space-sm md:gap-space-lg flex-1 max-w-xl">
+        <button
+          type="button"
+          onClick={onMenuClick}
+          aria-label="Abrir menú"
+          className="md:hidden p-space-xs rounded-lg text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors flex-shrink-0"
+        >
+          <span className="material-symbols-outlined text-[24px]">menu</span>
+        </button>
+        <div className="relative w-full max-w-md hidden sm:block">
           <span className="material-symbols-outlined absolute left-space-md top-1/2 -translate-y-1/2 text-outline text-[18px]">
             search
           </span>

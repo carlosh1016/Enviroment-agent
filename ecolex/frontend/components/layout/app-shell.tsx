@@ -25,6 +25,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const user = useAuthStore((state) => state.user);
   const setUser = useAuthStore((state) => state.setUser);
   const [ready, setReady] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  // Cerrar el drawer mobile automaticamente al navegar a otra ruta (ej. tras tocar un item del
+  // menu) -- sin esto, se queda abierto tapando la pagina nueva.
+  useEffect(() => {
+    setSidebarOpen(false);
+  }, [pathname]);
 
   useEffect(() => {
     // Esperar a que zustand/persist termine de leer localStorage antes de
@@ -75,10 +82,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="bg-surface min-h-screen">
-      <Sidebar />
-      <div className="pl-64 flex flex-col min-h-screen bg-surface">
-        <Header />
-        <main className="w-full pt-16 px-space-lg py-space-lg flex-1 bg-surface">{children}</main>
+      <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+      <div className="md:pl-64 flex flex-col min-h-screen bg-surface">
+        <Header onMenuClick={() => setSidebarOpen(true)} />
+        <main className="w-full pt-16 px-space-md md:px-space-lg py-space-lg flex-1 bg-surface">{children}</main>
       </div>
     </div>
   );
