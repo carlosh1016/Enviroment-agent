@@ -1,5 +1,7 @@
 from contextlib import asynccontextmanager
+from datetime import datetime
 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,6 +15,7 @@ from app.database import engine
 from app.limiter import limiter
 from app.logging_config import configure_logging, get_logger
 from app.routers import auth, conversations, documents, reports, stats, users
+from app.services.minambiente_sync_service import run_sync_job
 
 configure_logging()
 logger = get_logger(__name__)
@@ -20,12 +23,35 @@ logger = get_logger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Ciclo de vida de la aplicacion: habilita pgvector y registra el arranque/apagado del servicio."""
+    """Ciclo de vida de la aplicacion: habilita pgvector, registra el arranque/apagado del
+    servicio y (si esta activado) programa la sincronizacion periodica de normativa."""
     logger.info("Iniciando aplicacion")
     if engine.dialect.name == "postgresql":
         async with engine.begin() as conn:
             await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+
+    scheduler = None
+    if settings.ENABLE_NORM_SYNC_SCHEDULER:
+        scheduler = AsyncIOScheduler()
+        scheduler.add_job(
+            run_sync_job,
+            "interval",
+            hours=settings.NORM_SYNC_INTERVAL_HOURS,
+            id="sync_minambiente_corpus",
+            # Corre una vez al arrancar en vez de esperar el primer intervalo completo: si el
+            # proceso se reinicia seguido (deploys), evita quedarse sin sincronizar por dias.
+            next_run_time=datetime.now(),
+        )
+        scheduler.start()
+        logger.info(
+            "Scheduler de sincronizacion de normativa activado (cada %d horas)",
+            settings.NORM_SYNC_INTERVAL_HOURS,
+        )
+
     yield
+
+    if scheduler is not None:
+        scheduler.shutdown(wait=False)
     logger.info("Deteniendo aplicacion")
 
 

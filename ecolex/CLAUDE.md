@@ -67,9 +67,9 @@ Roles por usuario: `admin`, `analyst`, `viewer`.
 
 ## Tests
 
-- 31/32 pasan (`docker compose exec backend python -m pytest -q`). Falla
-  `test_auth.py::TestAuth::test_refresh_and_logout_cycle`, fallo **preexistente** (el cliente
-  de pruebas no reenvia la cookie `Secure` por HTTP).
+- 80/80 pasan (`docker compose exec backend python -m pytest -q`). El fallo preexistente de
+  `test_refresh_and_logout_cycle` (cookie `Secure` no se reenvia por HTTP) se dejo de ver tras
+  poner `COOKIE_SECURE=False` para desarrollo local (ver seccion de 2026-10-20).
 - No hay tests de `users`, `/auth/me` ni del frontend.
 
 ## Pendiente
@@ -257,6 +257,107 @@ generar el informe de una conversacion ajena, inconsistente con el rol de audito
 agregado a `/conversations/*`. Ahora usa el mismo `_get_viewable_conversation_or_404` (dueno o
 admin) que los mensajes del chat. Efecto colateral correcto: cruzar de tenant ahora da 404 (no
 revela que la conversacion existe), no 403 -- igual que en conversations.py.
+
+## Sincronizacion automatica de normativa (2026-10-21)
+
+Pedido inicial: una profesora de ambiental senalo que la normativa "cambia cada nada", y la idea
+era que el corpus base no dependiera solo de carga manual. Antes de construir nada se investigo
+si Funcion Publica/Minambiente exponen una API (no: ambos son sitios que solo sirven PDFs, sin
+API ni datos abiertos para el texto normativo) y se probo **Croma** (usecroma.com, API de pago
+que envuelve el Gestor Normativo de Funcion Publica): funciona, pero su cobertura de
+resoluciones especificas de Minambiente resulto muy delgada (ninguna de las 6 resoluciones ya
+cargadas a mano en el corpus aparecio alli; solo 8 resoluciones en total bajo
+`entity=ministerio-de-ambiente` en todo su dataset). Se descarto como fuente.
+
+**Decision final**: scraping directo del listado publico de Minambiente
+(`https://www.minambiente.gov.co/normativa/{categoria}/`), que SI tiene una estructura HTML
+estable y parseable (clase `div.row.box-docgd` por entrada, `a.documento-normativa` con el
+titulo y el link al PDF, `span.txt-peque-archivo` con la fecha -- OJO: hay DOS spans con esa
+misma clase por fila, uno vacio; hay que filtrar por el que contiene el texto "Publicado"). Solo
+cubre Minambiente (no Funcion Publica: sitio legado, mucho mas fragil, y ya se descarto via
+Croma que su cobertura ambiental es pobre).
+
+- `app/models/external_norm.py` + migracion `0007`: tabla `external_norms`, dedupe por
+  `pdf_url` (unique). Guarda `status` (pending/ingested/failed) y un `supersedes_note` de texto
+  libre.
+- `app/services/minambiente_sync_service.py`: scraper (BeautifulSoup) + logica de sync. Revisa
+  SOLO la pagina 1 de cada categoria (`resoluciones`, `decretos`, `circulares`, `conpes`): las
+  entradas vienen en orden descendente de publicacion, asi que cualquier norma nueva siempre
+  aparece ahi (paginas mas profundas solo servirian para una carga historica deliberada, fuera
+  de alcance de la sincronizacion diaria). Reutiliza `ingestion_service.process_document`
+  directamente (misma logica que una subida manual de admin), con `is_base_corpus=True`.
+  **`detect_supersession`**: advertencia simple (nunca reemplazo automatico) cuando el titulo O
+  el NOMBRE DEL ARCHIVO PDF contienen palabras como "deroga"/"modifica"/"aclara"/"revoca" --
+  importante: esa senal casi siempre esta SOLO en el nombre del archivo, no en el titulo visible
+  en la pagina (ej. "Resolución 1067 de 2026" se ve inofensivo, pero el PDF se llama
+  `Resolucion-1067-del-19-AGO-2026-ACLARA-la-Res.-956-2026_.pdf`).
+- `app/scripts/sync_minambiente_corpus.py`: `docker compose exec backend python -m
+  app.scripts.sync_minambiente_corpus [--max-new-per-category N]`. El flag es importante en la
+  PRIMERA corrida real: como nunca ha corrido antes, TODA la pagina 1 cuenta como "nueva" (se
+  verificaron ~132 resoluciones + 108 decretos + 48 circulares + 33 conpes solo en pagina 1 --
+  sin tope, la primera corrida ingestaria ~321 PDFs de una sola vez, cada uno con costo real de
+  OpenRouter). En estado estable (corridas diarias posteriores) tipicamente hay 0-2 nuevas por
+  categoria y el tope nunca se alcanza.
+- Scheduler opcional en `app/main.py` (APScheduler, `AsyncIOScheduler`), **apagado por
+  defecto** (`ENABLE_NORM_SYNC_SCHEDULER=False`): no hay un deploy corriendo 24/7 todavia, asi
+  que activarlo en un `docker compose up` local solo haria scraping innecesario en cada
+  reinicio de quien sea que este desarrollando. Activar con `ENABLE_NORM_SYNC_SCHEDULER=True` +
+  `NORM_SYNC_INTERVAL_HOURS` (default 24) el dia que haya un deploy real. Corre una vez al
+  arrancar (`next_run_time=datetime.now()`) ademas de cada intervalo, para no quedarse sin
+  sincronizar por dias si el proceso se reinicia seguido.
+- Solo agrega documentos NUEVOS. No hay reemplazo/borrado automatico de una norma ya ingestada
+  aunque se detecte una posible derogacion -- eso queda para revision manual via el
+  `supersedes_note` guardado (todavia no hay UI de admin para verlo; hoy solo queda en la DB y
+  en el log).
+
+## Carga historica real de Minambiente + 3 bugs encontrados en el camino (2026-10-26/27)
+
+Se corrio la carga historica completa (pagina 1 de las 4 categorias) en lotes controlados de
+`--max-new-per-category 10`, revisando el saldo real de OpenRouter entre lotes. Costo total real
+de la ingesta masiva: **~$13.8** (de $4.57 a $18.38 usados sobre un limite de $20 en la API key).
+Estado final: **314 documentos `ready`** en el corpus base (eran ~24 antes de esta sesion),
+`resoluciones`/`circulares`/`conpes` agotadas (todo lo de pagina 1 ya esta cubierto),
+`decretos` tambien salvo 5 fallos permanentes. 7 fallos quedan sin resolver, ninguno recuperable
+reintentando (ver mas abajo): 2 Conpes con certificado SSL roto del lado de Minambiente, y 5
+Decretos de 2008-2009 con el PDF internamente corrupto (`PSSyntaxError`/"Invalid dictionary
+construct" de pdfminer, falla ANTES de llegar a OpenRouter, costo $0).
+
+Tres bugs reales encontrados y arreglados durante esta corrida (todos en
+`app/services/openrouter_client.py` y `app/services/minambiente_sync_service.py`):
+
+1. **402 "in_flight_budget_exhausted" tratado como fallo permanente**: el limite configurado en
+   la API key (`$20` en este caso) le pone un techo chico al "presupuesto de requests en vuelo"
+   de OpenRouter -- no es falta de saldo real, es que ese presupuesto se agota momentaneamente
+   con una ingesta secuencial rapida. OpenRouter manda `Retry-After` (tipicamente 120s) pidiendo
+   reintentar, pero `_post_with_retry` lo trataba como un 4xx fatal sin reintento. Esto tumbo 30
+   de 40 documentos en el primer lote real. Fix: `_is_in_flight_budget_error` detecta este 402
+   especifico (por `metadata.reason`, no por status code solo) y lo reintenta hasta
+   `IN_FLIGHT_BUDGET_MAX_ATTEMPTS` (4) veces respetando el `Retry-After`; un 402 por otro motivo
+   (ej. saldo real insuficiente) sigue siendo fallo permanente.
+2. **El dedupe por `pdf_url` bloqueaba para siempre una norma que fallo**: `failed` o `pending`
+   (esto ultimo solo puede quedar asi si el proceso se interrumpio a medio commit -- se vio en
+   vivo con el proceso matado por falta de memoria del sistema) se trataban igual que `ingested`:
+   "ya existe una fila, no hacer nada". Fix: `_get_or_create_external_norm` ahora retoma esas dos
+   y limpia el `Document` roto de la corrida anterior (si quedo alguno) antes de reintentar.
+3. **Normas que YA estaban en el corpus (cargadas a mano) se iban a re-ingestar como
+   duplicadas**: el dedupe es por `pdf_url` exacto, pero Minambiente lista en su propia pagina
+   normas que ya se cargaron a mano desde un archivo distinto (ej. "Decreto 1076 de 2015", uno
+   de los 8 documentos originales del corpus) -- bajo un `pdf_url` que el scraper nunca habia
+   visto, asi que se veia como "nueva". Fix: `_extract_norm_identity` reconoce la norma por
+   (tipo, numero, anio) tanto en el titulo mostrado en pantalla como en el nombre de archivo
+   real (que usa guiones/guiones bajos en vez de espacios); `_load_base_corpus_identities` carga
+   ese mapa UNA VEZ por corrida contra los documentos ya existentes en `_base`, y si hay match se
+   enlaza sin gastar nada en volver a descargar/ingestar. Atrapado en vivo dos veces: "Decreto
+   1076 de 2015" (cargado a mano) y "Decreto 2613 de 2013" (el propio Minambiente lo lista dos
+   veces, bajo dos URLs distintas). De paso se corrigio un bug de transaccion relacionado: el
+   caso "duplicado, recien enlazado" hacia `continue` sin `commit()`, por lo que se podia perder
+   si no habia ninguna candidata real despues en la misma corrida.
+
+Los 7 fallos permanentes (2 SSL + 5 PDF corrupto) seguiran reintentandose en cada corrida futura
+sin costo (fallan antes de la llamada a OpenRouter) -- no bloquean nada, simplemente nunca van a
+resolver solos; arreglarlos de verdad implicaria desactivar la verificacion SSL para 2 URLs
+puntuales (no vale la pena por 2 documentos) o reparar la estructura interna de 5 PDFs viejos de
+2008-2009 a mano.
 
 ## Skill de seguridad instalada (2026-10-20)
 

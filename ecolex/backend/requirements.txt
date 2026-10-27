@@ -28,6 +28,9 @@ openpyxl==3.1.5
 # Fase 3: generacion de reportes PDF (requiere Pango/Cairo del sistema, ver README)
 weasyprint==63.1
 
+# Sincronizacion automatica del corpus normativo (scheduler opcional, ver ENABLE_NORM_SYNC_SCHEDULER)
+apscheduler==3.10.4
+
 # httpx: usado por app/services/openrouter_client.py (produccion) y por el TestClient de pytest
 pytest==8.3.3
 pytest-asyncio==0.24.0

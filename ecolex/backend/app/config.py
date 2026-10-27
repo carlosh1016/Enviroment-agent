@@ -27,5 +27,12 @@ class Settings:
 
     OPENROUTER_API_KEY: str = config("OPENROUTER_API_KEY", default="")
 
+    # Sincronizacion automatica del corpus normativo (Minambiente). Apagada por defecto: no hay
+    # un deploy real corriendo 24/7 todavia, asi que activarla en un `docker compose up` local
+    # solo haria scraping innecesario del sitio de Minambiente en cada reinicio de quien sea que
+    # este desarrollando. Activar con ENABLE_NORM_SYNC_SCHEDULER=True el dia que haya un deploy.
+    ENABLE_NORM_SYNC_SCHEDULER: bool = config("ENABLE_NORM_SYNC_SCHEDULER", default=False, cast=bool)
+    NORM_SYNC_INTERVAL_HOURS: int = config("NORM_SYNC_INTERVAL_HOURS", default=24, cast=int)
+
 
 settings = Settings()
