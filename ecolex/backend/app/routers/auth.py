@@ -32,13 +32,14 @@ FORGOT_PASSWORD_MESSAGE = (
 
 
 def _set_refresh_cookie(response: Response, refresh_token: str) -> None:
-    """Establece el refresh token como cookie httpOnly, con flags Secure y SameSite=strict."""
+    """Establece el refresh token como cookie httpOnly, con flags Secure y SameSite configurables
+    (ver COOKIE_SAMESITE en config.py: "strict" en dev, "none" en produccion cross-site)."""
     response.set_cookie(
         key=settings.REFRESH_COOKIE_NAME,
         value=refresh_token,
         httponly=True,
         secure=settings.COOKIE_SECURE,
-        samesite="strict",
+        samesite=settings.COOKIE_SAMESITE,
         max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
         path="/auth",
     )

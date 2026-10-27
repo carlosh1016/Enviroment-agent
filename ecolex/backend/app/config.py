@@ -22,6 +22,11 @@ class Settings:
 
     REFRESH_COOKIE_NAME: str = config("REFRESH_COOKIE_NAME", default="refresh_token")
     COOKIE_SECURE: bool = config("COOKIE_SECURE", default=True, cast=bool)
+    # "strict" sirve para dev (frontend y backend en el mismo origen). En produccion, con el
+    # frontend en Vercel y el backend en otro dominio (cross-site), SameSite=Strict NUNCA se
+    # envia la cookie -- hay que pasar a "none" (valido solo junto con Secure=True) via
+    # COOKIE_SAMESITE=none en el .env de produccion.
+    COOKIE_SAMESITE: str = config("COOKIE_SAMESITE", default="strict")
 
     RATE_LIMIT_LOGIN: str = config("RATE_LIMIT_LOGIN", default="5/minute")
 
